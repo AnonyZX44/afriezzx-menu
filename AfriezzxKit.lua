@@ -113,6 +113,8 @@ local gui = make("ScreenGui", {
 	Name = "AfriezzxKit",
 	ResetOnSpawn = false,
 	IgnoreGuiInset = true,
+	ClipToDeviceSafeArea = false,
+	ScreenInsets = Enum.ScreenInsets.None,
 	DisplayOrder = 1000,
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, guiParent)
@@ -194,7 +196,7 @@ local shell = make("CanvasGroup", {
 	Name = "Shell",
 	Size = UDim2.fromOffset(Width, Height),
 	Position = UDim2.new(0.5, -Width / 2, 0.5, -Height / 2),
-	BackgroundColor3 = Palette.base,
+	BackgroundTransparency = 1,
 	BorderSizePixel = 0,
 	GroupTransparency = 1,
 	Visible = false,
@@ -202,13 +204,22 @@ local shell = make("CanvasGroup", {
 round(shell, 12)
 outline(shell, Palette.line, 1, 0.25)
 
+local shadeFrame = make("Frame", {
+	Name = "Shade",
+	Size = UDim2.fromScale(1, 1),
+	BackgroundColor3 = Palette.base,
+	BorderSizePixel = 0,
+	ZIndex = 0,
+}, shell)
+round(shadeFrame, 12)
+
 local shade = Instance.new("UIGradient")
 shade.Rotation = 90
 shade.Color = ColorSequence.new({
 	ColorSequenceKeypoint.new(0, Color3.fromRGB(17, 17, 22)),
 	ColorSequenceKeypoint.new(1, Color3.fromRGB(10, 10, 13)),
 })
-shade.Parent = shell
+shade.Parent = shadeFrame
 
 local shellScale = Instance.new("UIScale")
 shellScale.Scale = 0.96
