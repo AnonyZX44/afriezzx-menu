@@ -7,25 +7,50 @@ local Camera = Workspace.CurrentCamera or Workspace:WaitForChild("Camera")
 
 local Player = Players.LocalPlayer
 
+local sessionToken = {}
+_G.AFZ_MENU_TOKEN = sessionToken
+local function sessionAlive()
+	return _G.AFZ_MENU_TOKEN == sessionToken
+end
+
 local Theme = {
-	base = Color3.fromRGB(8, 8, 10),
-	panel = Color3.fromRGB(14, 14, 17),
-	raised = Color3.fromRGB(21, 21, 26),
-	hover = Color3.fromRGB(24, 24, 29),
-	stroke = Color3.fromRGB(39, 39, 46),
-	text = Color3.fromRGB(235, 235, 240),
-	muted = Color3.fromRGB(128, 128, 140),
-	accent = Color3.fromRGB(216, 182, 117),
-	accentDim = Color3.fromRGB(58, 50, 34),
-	live = Color3.fromRGB(120, 214, 160),
+	base = Color3.fromRGB(7, 7, 9),
+	panel = Color3.fromRGB(13, 13, 16),
+	surface = Color3.fromRGB(17, 17, 21),
+	hover = Color3.fromRGB(23, 23, 28),
+	stroke = Color3.fromRGB(34, 34, 40),
+	text = Color3.fromRGB(240, 240, 244),
+	muted = Color3.fromRGB(136, 136, 148),
+	accent = Color3.fromRGB(214, 178, 112),
+	live = Color3.fromRGB(118, 214, 160),
 	danger = Color3.fromRGB(226, 92, 92),
-	ally = Color3.fromRGB(124, 176, 232),
-	loot = Color3.fromRGB(232, 178, 96),
+	ally = Color3.fromRGB(126, 178, 234),
+	loot = Color3.fromRGB(230, 176, 96),
 	key = Color3.fromRGB(150, 220, 170),
 }
 
-local WINDOW_W = 600
-local WINDOW_H = 400
+local WINDOW_W = 640
+local WINDOW_H = 436
+local BODY_Y = 76
+local LEFT_W = 372
+local RIGHT_X = 386
+local RIGHT_W = 214
+
+local flags = {
+	esp = false,
+	players = true,
+	opah = true,
+	names = true,
+	distance = true,
+	tracers = false,
+	breakables = false,
+	keys = false,
+	noclip = false,
+}
+
+local refresh
+local checkDrawing
+local restoreNoclip
 
 local function fetch(name)
 	local ok, value = pcall(function()
@@ -110,6 +135,11 @@ local function text(parent, props)
 	return label
 end
 
+local function animate(instance, time, goal, style, direction)
+	local info = TweenInfo.new(time, style or Enum.EasingStyle.Quint, direction or Enum.EasingDirection.Out)
+	TweenService:Create(instance, info, goal):Play()
+end
+
 local guiParent = resolveParent()
 local staleGui = guiParent:FindFirstChild("AfriezzxMenu")
 if staleGui then
@@ -126,66 +156,217 @@ local gui = build("ScreenGui", {
 	ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
 }, guiParent)
 
-local flags = {
-	esp = false,
-	players = true,
-	opah = true,
-	names = true,
-	distance = true,
-	tracers = false,
-	breakables = false,
-	keys = false,
-}
+local shell = build("CanvasGroup", {
+	Name = "Shell",
+	Size = UDim2.fromOffset(WINDOW_W, WINDOW_H),
+	BackgroundColor3 = Theme.base,
+	BackgroundTransparency = 0,
+	BorderSizePixel = 0,
+	GroupTransparency = 1,
+	Visible = false,
+}, gui)
+round(shell, 20)
+outline(shell, Theme.stroke, 1, 0.15)
 
-local refreshESP
+local shellScale = Instance.new("UIScale")
+shellScale.Scale = 1
+shellScale.Parent = shell
 
-local switchStyle = {
-	on = Theme.accent,
-	off = Theme.raised,
-}
+local topLine = build("Frame", {
+	Size = UDim2.new(1, -40, 0, 1),
+	Position = UDim2.fromOffset(20, 0),
+	BackgroundColor3 = Theme.accent,
+	BackgroundTransparency = 0.25,
+	BorderSizePixel = 0,
+}, shell)
+local topFade = Instance.new("UIGradient")
+topFade.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 1),
+	NumberSequenceKeypoint.new(0.5, 0.2),
+	NumberSequenceKeypoint.new(1, 1),
+})
+topFade.Parent = topLine
 
-local function animate(instance, time, goal, style, direction)
-	local info = TweenInfo.new(time, style or Enum.EasingStyle.Quad, direction or Enum.EasingDirection.Out)
-	local tween = TweenService:Create(instance, info, goal)
-	tween:Play()
-	return tween
-end
+local header = build("Frame", {
+	Name = "Header",
+	Size = UDim2.new(1, 0, 0, 64),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+}, shell)
+
+local mark = build("Frame", {
+	Size = UDim2.fromOffset(28, 28),
+	Position = UDim2.fromOffset(20, 18),
+	BackgroundColor3 = Theme.accent,
+	BorderSizePixel = 0,
+}, header)
+round(mark, 9)
+text(mark, {
+	Size = UDim2.fromScale(1, 1),
+	Text = "A",
+	Font = Enum.Font.GothamBlack,
+	TextSize = 16,
+	TextColor3 = Theme.base,
+	TextXAlignment = Enum.TextXAlignment.Center,
+})
+
+text(header, {
+	Size = UDim2.fromOffset(220, 20),
+	Position = UDim2.fromOffset(58, 16),
+	Text = "Afriezzx",
+	Font = Enum.Font.GothamBold,
+	TextSize = 16,
+	TextColor3 = Theme.text,
+})
+
+text(header, {
+	Size = UDim2.fromOffset(220, 14),
+	Position = UDim2.fromOffset(58, 35),
+	Text = "roblox menu",
+	Font = Enum.Font.Gotham,
+	TextSize = 10,
+	TextColor3 = Theme.muted,
+})
+
+local statusPill = build("Frame", {
+	Size = UDim2.fromOffset(70, 22),
+	Position = UDim2.new(1, -142, 0, 21),
+	BackgroundColor3 = Theme.surface,
+	BorderSizePixel = 0,
+}, header)
+round(statusPill, 11)
+outline(statusPill, Theme.stroke, 1, 0.35)
+
+local statusDot = build("Frame", {
+	Size = UDim2.fromOffset(6, 6),
+	Position = UDim2.fromOffset(11, 8),
+	BackgroundColor3 = Theme.muted,
+	BorderSizePixel = 0,
+}, statusPill)
+round(statusDot, 3)
+
+local statusText = text(statusPill, {
+	Size = UDim2.fromOffset(44, 22),
+	Position = UDim2.fromOffset(22, 0),
+	Text = "off",
+	Font = Enum.Font.GothamMedium,
+	TextSize = 10,
+	TextColor3 = Theme.muted,
+})
+
+local close = build("TextButton", {
+	Size = UDim2.fromOffset(28, 28),
+	Position = UDim2.new(1, -48, 0, 18),
+	BackgroundColor3 = Theme.surface,
+	Text = "×",
+	Font = Enum.Font.GothamBold,
+	TextSize = 17,
+	TextColor3 = Theme.muted,
+	AutoButtonColor = false,
+	BorderSizePixel = 0,
+}, header)
+round(close, 9)
+
+close.MouseEnter:Connect(function()
+	animate(close, 0.14, { BackgroundColor3 = Theme.hover, TextColor3 = Theme.text })
+end)
+close.MouseLeave:Connect(function()
+	animate(close, 0.14, { BackgroundColor3 = Theme.surface, TextColor3 = Theme.muted })
+end)
+
+local headerRule = build("Frame", {
+	Size = UDim2.new(1, -40, 0, 1),
+	Position = UDim2.fromOffset(20, 63),
+	BackgroundColor3 = Theme.stroke,
+	BackgroundTransparency = 0.35,
+	BorderSizePixel = 0,
+}, shell)
+
+local body = build("Frame", {
+	Name = "Body",
+	Size = UDim2.new(1, -40, 1, -114),
+	Position = UDim2.fromOffset(20, BODY_Y),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+}, shell)
+
+local leftFeed = build("Frame", {
+	Size = UDim2.new(0, LEFT_W, 1, 0),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+}, body)
+
+local rightFeed = build("Frame", {
+	Size = UDim2.new(0, RIGHT_W, 1, 0),
+	Position = UDim2.fromOffset(RIGHT_X, 0),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+}, body)
+
+local visualTitle = text(leftFeed, {
+	Size = UDim2.fromOffset(120, 20),
+	Position = UDim2.fromOffset(0, 0),
+	Text = "Visual",
+	Font = Enum.Font.GothamBold,
+	TextSize = 13,
+	TextColor3 = Theme.text,
+})
+
+local markedLabel = text(leftFeed, {
+	Size = UDim2.fromOffset(140, 20),
+	Position = UDim2.new(1, -140, 0, 0),
+	Text = "0 marked",
+	Font = Enum.Font.Code,
+	TextSize = 10,
+	TextColor3 = Theme.muted,
+	TextXAlignment = Enum.TextXAlignment.Right,
+})
+
+local visualRule = build("Frame", {
+	Size = UDim2.new(1, 0, 0, 1),
+	Position = UDim2.fromOffset(0, 22),
+	BackgroundColor3 = Theme.stroke,
+	BackgroundTransparency = 0.4,
+	BorderSizePixel = 0,
+}, leftFeed)
+
+local switchOn = Theme.accent
+local switchOff = Theme.surface
 
 local function buildSwitch(parent, default, changed)
 	local track = build("Frame", {
 		Name = "Track",
-		Size = UDim2.fromOffset(38, 20),
-		Position = UDim2.fromOffset(0, 0),
-		BackgroundColor3 = Theme.raised,
+		Size = UDim2.fromOffset(40, 22),
+		BackgroundColor3 = switchOff,
 		BorderSizePixel = 0,
 	}, parent)
-	round(track, 10)
-	local edge = outline(track, Theme.stroke, 1, 0.25)
+	round(track, 11)
+	local edge = outline(track, Theme.stroke, 1, 0.3)
 	local knob = build("Frame", {
 		Name = "Knob",
-		Size = UDim2.fromOffset(14, 14),
+		Size = UDim2.fromOffset(16, 16),
 		Position = UDim2.fromOffset(3, 3),
 		BackgroundColor3 = Theme.muted,
 		BorderSizePixel = 0,
 	}, track)
-	round(knob, 7)
+	round(knob, 8)
 
 	local state = default == true
 	local function render(withTween)
 		local goal = state and UDim2.fromOffset(21, 3) or UDim2.fromOffset(3, 3)
-		local fill = state and Theme.accent or Theme.muted
-		local backing = state and Theme.accentDim or Theme.raised
+		local knobColor = state and Theme.base or Theme.muted
+		local trackColor = state and Theme.accent or switchOff
+		local edgeColor = state and Theme.accent or Theme.stroke
 		if withTween then
-			animate(knob, 0.14, { Position = goal })
-			animate(knob, 0.14, { BackgroundColor3 = fill })
-			animate(track, 0.14, { BackgroundColor3 = backing })
-			animate(edge, 0.14, { Color = state and Theme.accent or Theme.stroke, Transparency = state and 0.55 or 0.25 })
+			animate(knob, 0.18, { Position = goal, BackgroundColor3 = knobColor })
+			animate(track, 0.18, { BackgroundColor3 = trackColor })
+			animate(edge, 0.18, { Color = edgeColor, Transparency = state and 0.6 or 0.3 })
 		else
 			knob.Position = goal
-			knob.BackgroundColor3 = fill
-			track.BackgroundColor3 = backing
-			edge.Color = state and Theme.accent or Theme.stroke
-			edge.Transparency = state and 0.55 or 0.25
+			knob.BackgroundColor3 = knobColor
+			track.BackgroundColor3 = trackColor
+			edge.Color = edgeColor
+			edge.Transparency = state and 0.6 or 0.3
 		end
 	end
 	render(false)
@@ -213,372 +394,276 @@ local function buildSwitch(parent, default, changed)
 			state = value == true
 			render(withTween ~= false)
 		end,
+		track = track,
+		knob = knob,
 	}
 end
 
-local function buildRow(list, order, title, subtitle, default, changed)
+local function buildRow(parent, y, height, title, subtitle, default, changed, big)
 	local row = build("Frame", {
 		Name = title,
-		Size = UDim2.new(1, 0, 0, 54),
+		Size = UDim2.new(1, 0, 0, height),
+		Position = UDim2.fromOffset(0, y),
 		BackgroundColor3 = Theme.hover,
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
-		LayoutOrder = order,
-	}, list)
+	}, parent)
 
 	text(row, {
-		Size = UDim2.new(1, -58, 0, 20),
-		Position = UDim2.fromOffset(0, 9),
+		Size = UDim2.new(1, -58, 0, big and 22 or 18),
+		Position = UDim2.fromOffset(0, big and 10 or 7),
 		Text = title,
-		TextSize = 13,
-		Font = Enum.Font.GothamMedium,
+		Font = big and Enum.Font.GothamBold or Enum.Font.GothamMedium,
+		TextSize = big and 15 or 13,
+		TextColor3 = Theme.text,
 	})
 
-	local sub = text(row, {
-		Size = UDim2.new(1, -58, 0, 16),
-		Position = UDim2.fromOffset(0, 28),
-		Text = subtitle or "",
-		TextSize = 11,
-		TextColor3 = Theme.muted,
-		Font = Enum.Font.Gotham,
-	})
+	if subtitle then
+		text(row, {
+			Size = UDim2.new(1, -58, 0, 15),
+			Position = UDim2.fromOffset(0, big and 32 or 24),
+			Text = subtitle,
+			Font = Enum.Font.Gotham,
+			TextSize = 11,
+			TextColor3 = Theme.muted,
+		})
+	end
 
 	local divider = build("Frame", {
 		Size = UDim2.new(1, 0, 0, 1),
 		Position = UDim2.new(0, 0, 1, -1),
 		BackgroundColor3 = Theme.stroke,
-		BackgroundTransparency = 0.45,
+		BackgroundTransparency = 0.5,
 		BorderSizePixel = 0,
 	}, row)
 
 	local control = buildSwitch(row, default, changed)
-	control.frame = row
-	control.track = row:FindFirstChild("Track")
+	control.track.Position = UDim2.new(1, -40, 0.5, -11)
 
 	row.MouseEnter:Connect(function()
-		animate(row, 0.12, { BackgroundTransparency = 0 })
+		animate(row, 0.14, { BackgroundTransparency = 0.35 })
 	end)
 	row.MouseLeave:Connect(function()
-		animate(row, 0.12, { BackgroundTransparency = 1 })
+		animate(row, 0.14, { BackgroundTransparency = 1 })
 	end)
-	sub.Visible = subtitle ~= nil and subtitle ~= ""
-
-	local switch = row:FindFirstChild("Track")
-	if switch then
-		switch.Position = UDim2.new(1, -38, 0.5, -10)
-	end
 
 	return control
 end
 
-local menu = build("Frame", {
-	Name = "Window",
-	Size = UDim2.fromOffset(WINDOW_W, WINDOW_H),
-	BackgroundColor3 = Theme.base,
-	BorderSizePixel = 0,
-}, gui)
-menu.Visible = false
-round(menu, 18)
-outline(menu, Theme.stroke, 1, 0.15)
+local function buildModule(y, height, title)
+	local module = build("Frame", {
+		Size = UDim2.new(1, 0, 0, height),
+		Position = UDim2.fromOffset(0, y),
+		BackgroundColor3 = Theme.panel,
+		BorderSizePixel = 0,
+	}, rightFeed)
+	round(module, 13)
+	outline(module, Theme.stroke, 1, 0.25)
 
-local menuScale = Instance.new("UIScale")
-menuScale.Scale = 1
-menuScale.Parent = menu
+	text(module, {
+		Size = UDim2.new(1, -28, 0, 18),
+		Position = UDim2.fromOffset(14, 11),
+		Text = title,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 11,
+		TextColor3 = Theme.muted,
+	})
 
-local topLine = build("Frame", {
-	Size = UDim2.new(1, -36, 0, 1),
-	Position = UDim2.fromOffset(18, 0),
-	BackgroundColor3 = Theme.accent,
-	BackgroundTransparency = 0.35,
-	BorderSizePixel = 0,
-}, menu)
-local topGradient = Instance.new("UIGradient")
-topGradient.Transparency = NumberSequence.new({
-	NumberSequenceKeypoint.new(0, 1),
-	NumberSequenceKeypoint.new(0.5, 0.25),
-	NumberSequenceKeypoint.new(1, 1),
-})
-topGradient.Parent = topLine
+	local rule = build("Frame", {
+		Size = UDim2.new(1, -28, 0, 1),
+		Position = UDim2.fromOffset(14, 30),
+		BackgroundColor3 = Theme.stroke,
+		BackgroundTransparency = 0.45,
+		BorderSizePixel = 0,
+	}, module)
 
-local header = build("Frame", {
-	Name = "Header",
-	Size = UDim2.new(1, 0, 0, 58),
-	BackgroundTransparency = 1,
-	BorderSizePixel = 0,
-}, menu)
+	return module
+end
 
-local mark = build("Frame", {
-	Size = UDim2.fromOffset(26, 26),
-	Position = UDim2.fromOffset(18, 16),
-	BackgroundColor3 = Theme.accent,
-	BorderSizePixel = 0,
-}, header)
-round(mark, 8)
-text(mark, {
-	Size = UDim2.fromScale(1, 1),
-	Text = "A",
-	Font = Enum.Font.GothamBlack,
-	TextSize = 15,
-	TextColor3 = Theme.base,
-	TextXAlignment = Enum.TextXAlignment.Center,
-})
+local function moduleRow(module, y, height, title, subtitle, default, changed)
+	local row = build("Frame", {
+		Name = title,
+		Size = UDim2.new(1, -28, 0, height),
+		Position = UDim2.fromOffset(14, y),
+		BackgroundColor3 = Theme.hover,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+	}, module)
 
-text(header, {
-	Size = UDim2.fromOffset(200, 18),
-	Position = UDim2.fromOffset(54, 15),
-	Text = "Afriezzx",
-	Font = Enum.Font.GothamBold,
-	TextSize = 14,
+	text(row, {
+		Size = UDim2.new(1, -50, 0, 16),
+		Position = UDim2.fromOffset(0, subtitle and 4 or (height - 16) / 2),
+		Text = title,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 12,
+		TextColor3 = Theme.text,
+	})
+
+	if subtitle then
+		text(row, {
+			Size = UDim2.new(1, -50, 0, 13),
+			Position = UDim2.fromOffset(0, 21),
+			Text = subtitle,
+			Font = Enum.Font.Gotham,
+			TextSize = 10,
+			TextColor3 = Theme.muted,
+		})
+	end
+
+	local control = buildSwitch(row, default, changed)
+	control.track.Position = UDim2.new(1, -40, 0.5, -11)
+
+	row.MouseEnter:Connect(function()
+		animate(row, 0.14, { BackgroundTransparency = 0.4 })
+	end)
+	row.MouseLeave:Connect(function()
+		animate(row, 0.14, { BackgroundTransparency = 1 })
+	end)
+
+	return control
+end
+
+local espSwitches = {}
+
+espSwitches.esp = buildRow(leftFeed, 28, 58, "ESP", "draw through walls", false, function(value)
+	flags.esp = value
+	if refresh then
+		refresh()
+	end
+end, true)
+
+espSwitches.players = buildRow(leftFeed, 86, 44, "Players", "highlight other players", true, function(value)
+	flags.players = value
+	if refresh then
+		refresh()
+	end
+end)
+
+espSwitches.opah = buildRow(leftFeed, 130, 44, "Opah", "mark the entity through walls", true, function(value)
+	flags.opah = value
+	if refresh then
+		refresh()
+	end
+end)
+
+espSwitches.names = buildRow(leftFeed, 174, 44, "Names", "label above each target", true, function(value)
+	flags.names = value
+	if refresh then
+		refresh()
+	end
+end)
+
+espSwitches.distance = buildRow(leftFeed, 218, 44, "Distance", "meters to target", true, function(value)
+	flags.distance = value
+	if refresh then
+		refresh()
+	end
+end)
+
+espSwitches.tracers = buildRow(leftFeed, 262, 44, "Tracers", "line from screen bottom", false, function(value)
+	flags.tracers = value
+	if value and not checkDrawing() then
+		flags.tracers = false
+		espSwitches.tracers.set(false)
+	end
+	if refresh then
+		refresh()
+	end
+end)
+
+local movementModule = buildModule(0, 100, "Movement")
+
+espSwitches.noclip = moduleRow(movementModule, 34, 58, "Noclip", "collisions stay off", false, function(value)
+	flags.noclip = value
+	if not value then
+		restoreNoclip()
+	end
+end)
+
+local worldModule = buildModule(112, 112, "World")
+
+espSwitches.breakables = moduleRow(worldModule, 34, 38, "Breakables", nil, false, function(value)
+	flags.breakables = value
+	if refresh then
+		refresh()
+	end
+end)
+
+espSwitches.keys = moduleRow(worldModule, 72, 38, "Puzzle keys", nil, false, function(value)
+	flags.keys = value
+	if refresh then
+		refresh()
+	end
+end)
+
+local sessionModule = buildModule(236, 86, "Session")
+
+local fpsValue = text(sessionModule, {
+	Size = UDim2.fromOffset(60, 18),
+	Position = UDim2.fromOffset(14, 38),
+	Text = "60",
+	Font = Enum.Font.Code,
+	TextSize = 11,
 	TextColor3 = Theme.text,
 })
-
-text(header, {
-	Size = UDim2.fromOffset(200, 14),
-	Position = UDim2.fromOffset(54, 31),
-	Text = "roblox menu",
+text(sessionModule, {
+	Size = UDim2.fromOffset(50, 18),
+	Position = UDim2.fromOffset(14, 56),
+	Text = "fps",
 	Font = Enum.Font.Gotham,
 	TextSize = 10,
 	TextColor3 = Theme.muted,
 })
 
-local version = text(header, {
-	Size = UDim2.fromOffset(46, 16),
-	Position = UDim2.new(1, -104, 0, 21),
-	Text = "v1.0",
+local uptimeValue = text(sessionModule, {
+	Size = UDim2.fromOffset(100, 18),
+	Position = UDim2.new(1, -114, 0, 38),
+	Text = "00:00",
 	Font = Enum.Font.Code,
+	TextSize = 11,
+	TextColor3 = Theme.text,
+	TextXAlignment = Enum.TextXAlignment.Right,
+})
+text(sessionModule, {
+	Size = UDim2.fromOffset(100, 18),
+	Position = UDim2.new(1, -114, 0, 56),
+	Text = "session",
+	Font = Enum.Font.Gotham,
 	TextSize = 10,
 	TextColor3 = Theme.muted,
 	TextXAlignment = Enum.TextXAlignment.Right,
 })
 
-local close = build("TextButton", {
-	Size = UDim2.fromOffset(26, 26),
-	Position = UDim2.new(1, -44, 0, 16),
-	BackgroundColor3 = Theme.raised,
-	Text = "×",
-	Font = Enum.Font.GothamBold,
-	TextSize = 16,
-	TextColor3 = Theme.muted,
-	AutoButtonColor = false,
-	BorderSizePixel = 0,
-}, header)
-round(close, 8)
-
-close.MouseEnter:Connect(function()
-	animate(close, 0.12, { BackgroundColor3 = Theme.hover, TextColor3 = Theme.text })
-end)
-close.MouseLeave:Connect(function()
-	animate(close, 0.12, { BackgroundColor3 = Theme.raised, TextColor3 = Theme.muted })
-end)
-
-local headerRule = build("Frame", {
-	Size = UDim2.new(1, -36, 0, 1),
-	Position = UDim2.fromOffset(18, 57),
-	BackgroundColor3 = Theme.stroke,
-	BackgroundTransparency = 0.3,
-	BorderSizePixel = 0,
-}, menu)
-
-local rail = build("Frame", {
-	Name = "Rail",
-	Size = UDim2.new(0, 148, 1, -88),
-	Position = UDim2.fromOffset(0, 58),
-	BackgroundTransparency = 1,
-	BorderSizePixel = 0,
-}, menu)
-
-local railLine = build("Frame", {
-	Size = UDim2.new(0, 1, 1, -36),
-	Position = UDim2.new(0, 147, 0, 18),
-	BackgroundColor3 = Theme.stroke,
-	BackgroundTransparency = 0.4,
-	BorderSizePixel = 0,
-}, rail)
-
-local railList = build("Frame", {
-	Size = UDim2.new(1, 0, 0, 120),
-	Position = UDim2.fromOffset(0, 12),
-	BackgroundTransparency = 1,
-	BorderSizePixel = 0,
-}, rail)
-local railLayout = Instance.new("UIListLayout")
-railLayout.Padding = UDim.new(0, 2)
-railLayout.SortOrder = Enum.SortOrder.LayoutOrder
-railLayout.Parent = railList
-
-local content = build("Frame", {
-	Name = "Content",
-	Size = UDim2.new(1, -166, 1, -88),
-	Position = UDim2.fromOffset(166, 58),
-	BackgroundTransparency = 1,
-	BorderSizePixel = 0,
-}, menu)
-
-local contentTitle = text(content, {
-	Size = UDim2.new(1, 0, 0, 22),
-	Position = UDim2.fromOffset(0, 14),
-	Text = "ESP",
-	Font = Enum.Font.GothamBold,
-	TextSize = 17,
-})
-
-local contentSub = text(content, {
-	Size = UDim2.new(1, 0, 0, 15),
-	Position = UDim2.fromOffset(0, 36),
-	Text = "render highlights and tracking",
-	Font = Enum.Font.Gotham,
-	TextSize = 11,
-	TextColor3 = Theme.muted,
-})
-
-local pages = {}
-local tabs = {}
-
-local function createPage(name)
-	local page = build("ScrollingFrame", {
-		Name = name,
-		Size = UDim2.new(1, 0, 1, -66),
-		Position = UDim2.fromOffset(0, 60),
-		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-		CanvasSize = UDim2.new(),
-		AutomaticCanvasSize = Enum.AutomaticSize.Y,
-		ScrollBarThickness = 2,
-		ScrollBarImageColor3 = Theme.muted,
-		ScrollBarImageTransparency = 0.55,
-		ScrollingDirection = Enum.ScrollingDirection.Y,
-		ClipsDescendants = true,
-		Visible = false,
-	}, content)
-	local layout = Instance.new("UIListLayout")
-	layout.SortOrder = Enum.SortOrder.LayoutOrder
-	layout.Padding = UDim.new(0, 0)
-	layout.Parent = page
-	local padding = Instance.new("UIPadding")
-	padding.PaddingBottom = UDim.new(0, 6)
-	padding.Parent = page
-	pages[name] = page
-	return page
-end
-
-local espPage = createPage("ESP")
-local worldPage = createPage("World")
-local aboutPage = createPage("About")
-
-local pageMeta = {
-	ESP = { "ESP", "render highlights and tracking" },
-	World = { "World", "objects worth marking on the map" },
-	About = { "About", "build and controls" },
-}
-
-local function selectTab(name)
-	for pageName, page in pairs(pages) do
-		page.Visible = pageName == name
-	end
-	for tabName, tab in pairs(tabs) do
-		local active = tabName == name
-		animate(tab.label, 0.14, { TextColor3 = active and Theme.text or Theme.muted })
-		animate(tab.bar, 0.14, {
-			BackgroundTransparency = active and 0 or 1,
-			Size = active and UDim2.fromOffset(2, 16) or UDim2.fromOffset(2, 6),
-		})
-	end
-	local meta = pageMeta[name]
-	contentTitle.Text = meta[1]
-	contentSub.Text = meta[2]
-end
-
-local function buildTab(order, name)
-	local button = build("TextButton", {
-		Name = name,
-		Size = UDim2.new(1, -18, 0, 34),
-		Position = UDim2.fromOffset(0, 0),
-		BackgroundColor3 = Theme.raised,
-		BackgroundTransparency = 1,
-		Text = "",
-		AutoButtonColor = false,
-		BorderSizePixel = 0,
-		LayoutOrder = order,
-	}, railList)
-
-	local bar = build("Frame", {
-		Size = UDim2.fromOffset(2, 6),
-		Position = UDim2.fromOffset(10, 9),
-		BackgroundColor3 = Theme.accent,
-		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-	}, button)
-	round(bar, 1)
-
-	local label = text(button, {
-		Size = UDim2.new(1, -26, 1, 0),
-		Position = UDim2.fromOffset(22, 0),
-		Text = name,
-		Font = Enum.Font.GothamMedium,
-		TextSize = 12,
-		TextColor3 = Theme.muted,
-	})
-
-	button.MouseEnter:Connect(function()
-		if not pages[name].Visible then
-			animate(label, 0.12, { TextColor3 = Theme.text })
-		end
-	end)
-	button.MouseLeave:Connect(function()
-		if not pages[name].Visible then
-			animate(label, 0.12, { TextColor3 = Theme.muted })
-		end
-	end)
-	button.MouseButton1Click:Connect(function()
-		selectTab(name)
-	end)
-
-	tabs[name] = { label = label, bar = bar }
-end
-
-buildTab(1, "ESP")
-buildTab(2, "World")
-buildTab(3, "About")
-
 local footer = build("Frame", {
-	Name = "Footer",
-	Size = UDim2.new(1, 0, 0, 30),
-	Position = UDim2.new(0, 0, 1, -30),
+	Size = UDim2.new(1, 0, 0, 38),
+	Position = UDim2.new(0, 0, 1, -38),
 	BackgroundTransparency = 1,
 	BorderSizePixel = 0,
-}, menu)
+}, shell)
 
 local footerRule = build("Frame", {
-	Size = UDim2.new(1, -36, 0, 1),
-	Position = UDim2.fromOffset(18, 0),
+	Size = UDim2.new(1, -40, 0, 1),
+	Position = UDim2.fromOffset(20, 0),
 	BackgroundColor3 = Theme.stroke,
-	BackgroundTransparency = 0.35,
+	BackgroundTransparency = 0.4,
 	BorderSizePixel = 0,
 }, footer)
 
 text(footer, {
-	Size = UDim2.fromOffset(180, 30),
-	Position = UDim2.fromOffset(18, 0),
+	Size = UDim2.fromOffset(180, 38),
+	Position = UDim2.fromOffset(20, 0),
 	Text = "afriezzx",
 	Font = Enum.Font.GothamMedium,
 	TextSize = 10,
 	TextColor3 = Theme.accent,
 })
 
-local statusDot = build("Frame", {
-	Size = UDim2.fromOffset(6, 6),
-	Position = UDim2.new(1, -104, 0.5, -3),
-	BackgroundColor3 = Theme.muted,
-	BorderSizePixel = 0,
-}, footer)
-round(statusDot, 3)
-
-local statusText = text(footer, {
-	Size = UDim2.fromOffset(72, 30),
-	Position = UDim2.new(1, -94, 0, 0),
-	Text = "right shift",
+text(footer, {
+	Size = UDim2.fromOffset(220, 38),
+	Position = UDim2.new(1, -220, 0, 0),
+	Text = "right shift · drag header",
 	Font = Enum.Font.Code,
-	TextSize = 10,
+	TextSize = 9,
 	TextColor3 = Theme.muted,
 	TextXAlignment = Enum.TextXAlignment.Right,
 })
@@ -587,7 +672,7 @@ local tracked = {}
 local tracers = {}
 local drawingReady = nil
 
-local function checkDrawing()
+function checkDrawing()
 	if drawingReady ~= nil then
 		return drawingReady
 	end
@@ -648,7 +733,7 @@ local function makeEntry(inst, kind, color, labelText)
 		TextXAlignment = Enum.TextXAlignment.Center,
 	})
 
-	local entry = {
+	tracked[inst] = {
 		kind = kind,
 		part = part,
 		highlight = highlight,
@@ -656,8 +741,7 @@ local function makeEntry(inst, kind, color, labelText)
 		caption = caption,
 		label = labelText,
 	}
-	tracked[inst] = entry
-	return entry
+	return tracked[inst]
 end
 
 local function kindVisible(kind)
@@ -697,7 +781,8 @@ local function dropEntry(inst, entry)
 	tracked[inst] = nil
 end
 
-refreshESP = function()
+refresh = function()
+	local marked = 0
 	for inst, entry in pairs(tracked) do
 		if not inst.Parent then
 			dropEntry(inst, entry)
@@ -705,10 +790,15 @@ refreshESP = function()
 			local visible = kindVisible(entry.kind)
 			entry.highlight.Enabled = visible
 			entry.billboard.Enabled = visible and (flags.names or flags.distance)
+			if visible then
+				marked = marked + 1
+			end
 		end
 	end
+	markedLabel.Text = marked .. " marked"
 	statusDot.BackgroundColor3 = flags.esp and Theme.live or Theme.muted
-	statusText.Text = flags.esp and "active" or "right shift"
+	statusText.Text = flags.esp and "live" or "off"
+	statusText.TextColor3 = flags.esp and Theme.live or Theme.muted
 end
 
 local function scanPlayers()
@@ -718,7 +808,7 @@ local function scanPlayers()
 		end
 		task.wait(0.15)
 		makeEntry(character, "player", Theme.ally, displayName)
-		refreshESP()
+		refresh()
 	end
 
 	for _, other in ipairs(Players:GetPlayers()) do
@@ -763,7 +853,7 @@ local function scanFolder(folderName, kind, color, prefix)
 			task.wait(0.15)
 			attach(child)
 		end)
-		refreshESP()
+		refresh()
 	end)
 end
 
@@ -781,7 +871,7 @@ local function scanOpah()
 					end
 				end
 			end
-			refreshESP()
+			refresh()
 			task.wait(2)
 		end
 	end)
@@ -792,95 +882,44 @@ scanFolder("OpahBreakables", "breakable", Theme.loot, "")
 scanFolder("PuzzleItems", "key", Theme.key, "")
 scanOpah()
 
-local espSwitches = {}
+local noclipSaved = {}
 
-espSwitches.esp = buildRow(espPage, 1, "ESP", "master switch", false, function(value)
-	flags.esp = value
-	refreshESP()
-end)
-
-espSwitches.players = buildRow(espPage, 2, "Players", "highlight other players", true, function(value)
-	flags.players = value
-	refreshESP()
-end)
-
-espSwitches.opah = buildRow(espPage, 3, "Opah", "mark the entity through walls", true, function(value)
-	flags.opah = value
-	refreshESP()
-end)
-
-espSwitches.names = buildRow(espPage, 4, "Names", "label above each target", true, function(value)
-	flags.names = value
-	refreshESP()
-end)
-
-espSwitches.distance = buildRow(espPage, 5, "Distance", "meters to target", true, function(value)
-	flags.distance = value
-	refreshESP()
-end)
-
-espSwitches.tracers = buildRow(espPage, 6, "Tracers", "line from screen bottom", false, function(value)
-	flags.tracers = value
-	if value and not checkDrawing() then
-		flags.tracers = false
-		espSwitches.tracers.set(false)
+function restoreNoclip()
+	for part, value in pairs(noclipSaved) do
+		if part.Parent then
+			part.CanCollide = value
+		end
 	end
-	refreshESP()
-end)
-
-espSwitches.breakables = buildRow(worldPage, 1, "Breakables", "chairs and props in OpahBreakables", false, function(value)
-	flags.breakables = value
-	refreshESP()
-end)
-
-espSwitches.keys = buildRow(worldPage, 2, "Puzzle keys", "keys and padlock items", false, function(value)
-	flags.keys = value
-	refreshESP()
-end)
-
-local aboutLines = {
-	{ "author", "Afriezzx" },
-	{ "version", "1.0" },
-	{ "toggle", "RightShift or the A bubble" },
-	{ "targets", "Players, Opah, Breakables, PuzzleItems" },
-}
-
-for index, pair in ipairs(aboutLines) do
-	local row = build("Frame", {
-		Size = UDim2.new(1, 0, 0, 42),
-		BackgroundColor3 = Theme.hover,
-		BackgroundTransparency = 1,
-		BorderSizePixel = 0,
-		LayoutOrder = index,
-	}, aboutPage)
-	text(row, {
-		Size = UDim2.fromOffset(110, 42),
-		Position = UDim2.fromOffset(0, 0),
-		Text = pair[1],
-		TextSize = 11,
-		Font = Enum.Font.Gotham,
-		TextColor3 = Theme.muted,
-	})
-	text(row, {
-		Size = UDim2.new(1, -120, 0, 42),
-		Position = UDim2.fromOffset(120, 0),
-		Text = pair[2],
-		TextSize = 12,
-		Font = Enum.Font.GothamMedium,
-	})
-	local rule = build("Frame", {
-		Size = UDim2.new(1, 0, 0, 1),
-		Position = UDim2.new(0, 0, 1, -1),
-		BackgroundColor3 = Theme.stroke,
-		BackgroundTransparency = 0.45,
-		BorderSizePixel = 0,
-	}, row)
-	rule.Name = "Rule"
+	table.clear(noclipSaved)
 end
+
+RunService.Stepped:Connect(function()
+	if not sessionAlive() or not flags.noclip then
+		return
+	end
+	local character = Player.Character
+	if not character then
+		return
+	end
+	for _, item in ipairs(character:GetDescendants()) do
+		if item:IsA("BasePart") then
+			if noclipSaved[item] == nil then
+				noclipSaved[item] = item.CanCollide
+			end
+			if item.CanCollide then
+				item.CanCollide = false
+			end
+		end
+	end
+end)
+
+Player.CharacterAdded:Connect(function()
+	restoreNoclip()
+end)
 
 local bubble = build("TextButton", {
 	Name = "Bubble",
-	Size = UDim2.fromOffset(46, 46),
+	Size = UDim2.fromOffset(48, 48),
 	BackgroundColor3 = Theme.base,
 	Text = "A",
 	Font = Enum.Font.GothamBlack,
@@ -890,33 +929,37 @@ local bubble = build("TextButton", {
 	BorderSizePixel = 0,
 	Visible = false,
 }, gui)
-round(bubble, 23)
+round(bubble, 24)
 local bubbleStroke = outline(bubble, Theme.stroke, 1, 0.05)
 
-local openState = false
-local animToken = 0
+local menuOpen = false
+local animationToken = 0
 
 local function setMenu(open)
-	openState = open
-	animToken = animToken + 1
-	local token = animToken
+	menuOpen = open
+	animationToken = animationToken + 1
+	local token = animationToken
 	if open then
-		menu.Visible = true
-		menuScale.Scale = 0.94
-		animate(menuScale, 0.16, { Scale = 1 })
-		animate(bubble, 0.12, { TextColor3 = Theme.accent })
+		shell.Visible = true
+		shell.GroupTransparency = 1
+		shellScale.Scale = 0.95
+		body.Position = UDim2.fromOffset(20, BODY_Y + 8)
+		animate(shell, 0.22, { GroupTransparency = 0 }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+		animate(shellScale, 0.3, { Scale = 1 }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+		animate(body, 0.3, { Position = UDim2.fromOffset(20, BODY_Y) }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
 	else
-		animate(menuScale, 0.14, { Scale = 0.94 })
-		task.delay(0.14, function()
-			if token == animToken then
-				menu.Visible = false
+		animate(shell, 0.17, { GroupTransparency = 1 }, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+		animate(shellScale, 0.17, { Scale = 0.97 }, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+		task.delay(0.18, function()
+			if token == animationToken then
+				shell.Visible = false
 			end
 		end)
 	end
 end
 
 local function toggleMenu()
-	setMenu(not openState)
+	setMenu(not menuOpen)
 end
 
 close.MouseButton1Click:Connect(function()
@@ -924,13 +967,13 @@ close.MouseButton1Click:Connect(function()
 end)
 
 bubble.MouseEnter:Connect(function()
-	animate(bubbleStroke, 0.12, { Color = Theme.accent, Transparency = 0.45 })
+	animate(bubbleStroke, 0.16, { Color = Theme.accent, Transparency = 0.5 })
+	animate(bubble, 0.16, { TextColor3 = Theme.text })
 end)
 bubble.MouseLeave:Connect(function()
-	animate(bubbleStroke, 0.12, { Color = Theme.stroke, Transparency = 0.05 })
+	animate(bubbleStroke, 0.16, { Color = Theme.stroke, Transparency = 0.05 })
+	animate(bubble, 0.16, { TextColor3 = Theme.accent })
 end)
-
-selectTab("ESP")
 
 local function fitWindow()
 	local viewport = Camera.ViewportSize
@@ -939,29 +982,29 @@ local function fitWindow()
 	end
 	local scale = math.min(1, (viewport.X - 24) / WINDOW_W, (viewport.Y - 24) / WINDOW_H)
 	scale = math.max(scale, 0.55)
-	menuScale.Scale = scale
-	local width = WINDOW_W * scale
-	local height = WINDOW_H * scale
-	menu.Position = UDim2.fromOffset((viewport.X - width) / 2, (viewport.Y - height) / 2)
+	shellScale.Scale = scale
+	shell.Position = UDim2.fromOffset((viewport.X - WINDOW_W * scale) / 2, (viewport.Y - WINDOW_H * scale) / 2)
 end
 
 fitWindow()
 
-local bubblePosition = UDim2.new(1, -70, 0.5, -23)
-local bubbleTouchOffset
+local bubbleOffset
 local bubbleOrigin
 local bubbleTravel = 0
 
 bubble.InputBegan:Connect(function(input)
+	if not sessionAlive() then
+		return
+	end
 	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-		bubbleTouchOffset = Vector2.new(input.Position.X, input.Position.Y) - Vector2.new(bubble.AbsolutePosition.X, bubble.AbsolutePosition.Y)
+		bubbleOffset = Vector2.new(input.Position.X, input.Position.Y) - Vector2.new(bubble.AbsolutePosition.X, bubble.AbsolutePosition.Y)
 		bubbleOrigin = Vector2.new(input.Position.X, input.Position.Y)
 		bubbleTravel = 0
 	end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-	if not bubbleTouchOffset then
+	if not sessionAlive() or not bubbleOffset then
 		return
 	end
 	if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then
@@ -970,19 +1013,19 @@ UserInputService.InputChanged:Connect(function(input)
 	local pointer = Vector2.new(input.Position.X, input.Position.Y)
 	bubbleTravel = math.max(bubbleTravel, (pointer - bubbleOrigin).Magnitude)
 	local viewport = Camera.ViewportSize
-	local x = math.clamp(input.Position.X - bubbleTouchOffset.X, 0, math.max(0, viewport.X - 46))
-	local y = math.clamp(input.Position.Y - bubbleTouchOffset.Y, 0, math.max(0, viewport.Y - 46))
+	local x = math.clamp(input.Position.X - bubbleOffset.X, 0, math.max(0, viewport.X - 48))
+	local y = math.clamp(input.Position.Y - bubbleOffset.Y, 0, math.max(0, viewport.Y - 48))
 	bubble.Position = UDim2.fromOffset(x, y)
 end)
 
 UserInputService.InputEnded:Connect(function(input)
-	if not bubbleTouchOffset then
+	if not sessionAlive() or not bubbleOffset then
 		return
 	end
 	if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then
 		return
 	end
-	bubbleTouchOffset = nil
+	bubbleOffset = nil
 	if bubbleTravel < 6 then
 		toggleMenu()
 	end
@@ -992,28 +1035,31 @@ local dragging
 local dragOffset
 
 header.InputBegan:Connect(function(input)
+	if not sessionAlive() then
+		return
+	end
 	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
 		dragging = true
-		dragOffset = Vector2.new(input.Position.X, input.Position.Y) - Vector2.new(menu.AbsolutePosition.X, menu.AbsolutePosition.Y)
+		dragOffset = Vector2.new(input.Position.X, input.Position.Y) - Vector2.new(shell.AbsolutePosition.X, shell.AbsolutePosition.Y)
 	end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-	if not dragging then
+	if not sessionAlive() or not dragging then
 		return
 	end
 	if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then
 		return
 	end
 	local viewport = Camera.ViewportSize
-	local scale = menuScale.Scale
+	local scale = shellScale.Scale
 	local x = math.clamp(input.Position.X - dragOffset.X, 0, math.max(0, viewport.X - WINDOW_W * scale))
 	local y = math.clamp(input.Position.Y - dragOffset.Y, 0, math.max(0, viewport.Y - WINDOW_H * scale))
-	menu.Position = UDim2.fromOffset(x, y)
+	shell.Position = UDim2.fromOffset(x, y)
 end)
 
 UserInputService.InputEnded:Connect(function(input)
-	if not dragging then
+	if not sessionAlive() or not dragging then
 		return
 	end
 	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -1027,7 +1073,7 @@ Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
 	end
 end)
 
-local viewportConnection = Camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+Camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
 	if not dragging then
 		fitWindow()
 	end
@@ -1035,14 +1081,14 @@ local viewportConnection = Camera:GetPropertyChangedSignal("ViewportSize"):Conne
 		local viewport = Camera.ViewportSize
 		local absolute = bubble.AbsolutePosition
 		bubble.Position = UDim2.fromOffset(
-			math.clamp(absolute.X, 0, math.max(0, viewport.X - 46)),
-			math.clamp(absolute.Y, 0, math.max(0, viewport.Y - 46))
+			math.clamp(absolute.X, 0, math.max(0, viewport.X - 48)),
+			math.clamp(absolute.Y, 0, math.max(0, viewport.Y - 48))
 		)
 	end
 end)
 
 UserInputService.InputBegan:Connect(function(input, processed)
-	if processed then
+	if not sessionAlive() or processed then
 		return
 	end
 	if input.KeyCode == Enum.KeyCode.RightShift then
@@ -1050,10 +1096,26 @@ UserInputService.InputBegan:Connect(function(input, processed)
 	end
 end)
 
+local startedAt = os.clock()
+local fpsFrames = 0
+local fpsClock = 0
 local labelClock = 0
 
 RunService.RenderStepped:Connect(function(delta)
+	if not sessionAlive() then
+		return
+	end
 	labelClock = labelClock + delta
+	fpsClock = fpsClock + delta
+	fpsFrames = fpsFrames + 1
+
+	if fpsClock >= 0.5 then
+		fpsValue.Text = tostring(math.floor(fpsFrames / fpsClock + 0.5))
+		fpsFrames = 0
+		fpsClock = 0
+		local elapsed = math.floor(os.clock() - startedAt)
+		uptimeValue.Text = string.format("%02d:%02d", math.floor(elapsed / 60), elapsed % 60)
+	end
 
 	if labelClock >= 0.1 then
 		labelClock = 0
@@ -1107,9 +1169,7 @@ RunService.RenderStepped:Connect(function(delta)
 end)
 
 gui.Destroying:Connect(function()
-	if viewportConnection then
-		viewportConnection:Disconnect()
-	end
+	restoreNoclip()
 	for inst, entry in pairs(tracked) do
 		dropEntry(inst, entry)
 	end
@@ -1121,16 +1181,17 @@ gui.Destroying:Connect(function()
 	end
 end)
 
-local intro = build("Frame", {
+local intro = build("CanvasGroup", {
 	Name = "Intro",
 	Size = UDim2.fromScale(1, 1),
 	BackgroundColor3 = Color3.fromRGB(0, 0, 0),
 	BackgroundTransparency = 0,
 	BorderSizePixel = 0,
+	GroupTransparency = 0,
 }, gui)
 
 local introStack = build("Frame", {
-	Size = UDim2.fromOffset(320, 90),
+	Size = UDim2.fromOffset(340, 96),
 	Position = UDim2.fromScale(0.5, 0.5),
 	AnchorPoint = Vector2.new(0.5, 0.5),
 	BackgroundTransparency = 1,
@@ -1139,7 +1200,7 @@ local introStack = build("Frame", {
 
 local introKicker = text(introStack, {
 	Size = UDim2.new(1, 0, 0, 18),
-	Position = UDim2.fromOffset(0, 4),
+	Position = UDim2.fromOffset(0, 2),
 	Text = "Made by",
 	Font = Enum.Font.Gotham,
 	TextSize = 12,
@@ -1149,46 +1210,41 @@ local introKicker = text(introStack, {
 })
 
 local introName = text(introStack, {
-	Size = UDim2.new(1, 0, 0, 44),
+	Size = UDim2.new(1, 0, 0, 42),
 	Position = UDim2.fromOffset(0, 22),
 	Text = "Afriezzx",
 	Font = Enum.Font.GothamBlack,
-	TextSize = 34,
+	TextSize = 32,
 	TextColor3 = Theme.text,
 	TextXAlignment = Enum.TextXAlignment.Center,
 	TextTransparency = 1,
 })
 
 local introRule = build("Frame", {
-	Size = UDim2.fromOffset(28, 1),
-	Position = UDim2.fromOffset(146, 74),
+	Size = UDim2.fromOffset(24, 1),
+	Position = UDim2.fromOffset(158, 72),
 	BackgroundColor3 = Theme.accent,
 	BackgroundTransparency = 1,
 	BorderSizePixel = 0,
 }, introStack)
 
-task.spawn(function()
-	animate(introKicker, 0.28, { TextTransparency = 0 })
-	task.wait(0.08)
-	animate(introName, 0.34, { TextTransparency = 0 })
-	animate(introRule, 0.34, { BackgroundTransparency = 0.2, Size = UDim2.fromOffset(64, 1), Position = UDim2.fromOffset(128, 74) })
-	task.wait(1.05)
-	animate(introKicker, 0.4, { TextTransparency = 1 })
-	animate(introName, 0.4, { TextTransparency = 1 })
-	animate(introRule, 0.4, { BackgroundTransparency = 1 })
-	animate(intro, 0.4, { BackgroundTransparency = 1 })
-	task.wait(0.42)
-	intro:Destroy()
-	bubble.Visible = true
-	bubble.Position = bubblePosition
-	setMenu(true)
-end)
-
 if not checkDrawing() then
 	espSwitches.tracers.set(false)
-	local track = espSwitches.tracers.frame and espSwitches.tracers.frame:FindFirstChild("Track")
-	local hit = track and track:FindFirstChild("Hit")
-	if hit then
-		hit.Visible = false
-	end
+	espSwitches.tracers.track:FindFirstChild("Hit").Visible = false
 end
+
+refresh()
+
+task.spawn(function()
+	animate(introKicker, 0.3, { TextTransparency = 0 }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+	task.wait(0.06)
+	animate(introName, 0.36, { TextTransparency = 0 }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+	animate(introRule, 0.42, { BackgroundTransparency = 0.15, Size = UDim2.fromOffset(72, 1), Position = UDim2.fromOffset(134, 72) }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+	task.wait(1)
+	animate(intro, 0.45, { GroupTransparency = 1 }, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+	task.wait(0.46)
+	intro:Destroy()
+	bubble.Visible = true
+	bubble.Position = UDim2.new(1, -72, 0.5, -24)
+	setMenu(true)
+end)
