@@ -1766,6 +1766,571 @@ local function myTurn()
 	return myColor ~= nil and Chess.turnOf(lastFen) == myColor
 end
 
+local Workspace = game:GetService("Workspace")
+local espEnabled = true
+local espFolder = nil
+local espEntries = nil
+local espRawCorners = nil
+local espNormal = nil
+local espScale = 1
+local espFlip = false
+local espKind = "?"
+local espTriedAt = -1000000000
+local espStatusLabel = nil
+local espLastFen = nil
+local espLastBest = nil
+local espLastReply = nil
+
+local espColorMine = Color3.fromRGB(90, 210, 255)
+local espColorMineTo = Color3.fromRGB(90, 235, 160)
+local espColorEnemy = Color3.fromRGB(255, 120, 130)
+local espColorEnemyTo = Color3.fromRGB(255, 175, 90)
+
+local toastLabel = text(gui, {
+	Name = "Toast",
+	Text = "",
+	Font = Enum.Font.GothamBold,
+	TextSize = 13,
+	TextColor3 = Palette.paper,
+	TextStrokeTransparency = 0.4,
+	BackgroundTransparency = 1,
+	TextXAlignment = Enum.TextXAlignment.Center,
+	Size = UDim2.fromOffset(320, 20),
+	Position = UDim2.new(0.5, -160, 0, 58),
+	Visible = false,
+})
+
+local toastToken = 0
+
+local function toast(message, color)
+	toastToken = toastToken + 1
+	local token = toastToken
+	toastLabel.Text = message
+	toastLabel.TextColor3 = color or Palette.paper
+	toastLabel.Visible = true
+	task.delay(2.6, function()
+		if token == toastToken then
+			toastLabel.Visible = false
+		end
+	end)
+end
+
+local function fenPiece(fen, square)
+	local board = tostring(fen or ""):match("^(%S+)")
+	if not board or #square < 2 then
+		return nil
+	end
+	local fileIndex = square:byte(1) - 96
+	local rank = tonumber(square:sub(2, 2))
+	if not rank or fileIndex < 1 or fileIndex > 8 then
+		return nil
+	end
+	local row = 0
+	for rankText in board:gmatch("[^/]+") do
+		row = row + 1
+		if row == 9 - rank then
+			local index = 0
+			for char in rankText:gmatch(".") do
+				local empty = tonumber(char)
+				if empty then
+					index = index + empty
+				else
+					index = index + 1
+					if index == fileIndex then
+						return char
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function pieceLabel(letter)
+	if not letter then
+		return "?"
+	end
+	local names = {
+		p = "pion",
+		n = "kuda",
+		b = "uskup",
+		r = "benteng",
+		q = "ratu",
+		k = "raja",
+	}
+	local name = names[letter:lower()] or "?"
+	local color = letter == string.upper(letter) and "putih" or "hitam"
+	return name .. " " .. color
+end
+
+local function screenOf(position)
+	local camera = Workspace and Workspace.CurrentCamera
+	if not camera then
+		return nil
+	end
+	local screen, visible = camera:WorldToViewportPoint(position)
+	if not visible or screen.Z <= 0 then
+		return nil
+	end
+	return Vector2.new(screen.X, screen.Y)
+end
+
+local function orderCorners(corners)
+	local list = {}
+	for _, position in ipairs(corners) do
+		local screen = screenOf(position)
+		if screen then
+			table.insert(list, { world = position, screen = screen })
+		end
+	end
+	if #list < 4 then
+		return nil
+	end
+	table.sort(list, function(a, b)
+		return a.screen.Y > b.screen.Y
+	end)
+	local low = { list[1], list[2] }
+	local high = { list[3], list[4] }
+	if low[1].screen.X > low[2].screen.X then
+		low[1], low[2] = low[2], low[1]
+	end
+	if high[1].screen.X > high[2].screen.X then
+		high[1], high[2] = high[2], high[1]
+	end
+	return {
+		bl = low[1].world,
+		br = low[2].world,
+		tl = high[1].world,
+		tr = high[2].world,
+	}
+end
+
+local function topCorners(part)
+	local cf = part.CFrame
+	local center = cf.Position + cf.UpVector * (part.Size.Y * 0.5)
+	local right = cf.RightVector * (part.Size.X * 0.5)
+	local forward = cf.LookVector * (part.Size.Z * 0.5)
+	return {
+		center - right - forward,
+		center + right - forward,
+		center + right + forward,
+		center - right + forward,
+	}
+end
+
+local function cluster(values, tolerance)
+	table.sort(values)
+	local lines = {}
+	for _, value in ipairs(values) do
+		if #lines == 0 or math.abs(value - lines[#lines]) > tolerance then
+			table.insert(lines, value)
+		end
+	end
+	return lines
+end
+
+local function namedBoard()
+	local tiles = {}
+	for _, item in ipairs(Workspace:GetDescendants()) do
+		if item:IsA("BasePart") then
+			local file, rank = item.Name:lower():match("^([a-h])([1-8])$")
+			if file and rank then
+				tiles[file .. rank] = item
+			end
+		end
+	end
+	local count = 0
+	for _ in pairs(tiles) do
+		count = count + 1
+	end
+	if count ~= 64 or not tiles["a1"] then
+		return nil
+	end
+	local any = tiles["a1"]
+	local cf = any.CFrame
+	local right = Vector3.new(cf.RightVector.X, 0, cf.RightVector.Z)
+	local forward = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
+	if right.Magnitude < 0.01 or forward.Magnitude < 0.01 then
+		return nil
+	end
+	right = right.Unit
+	forward = forward.Unit
+	local origin = any.Position
+	local minX, maxX, minZ, maxZ, topY
+	for _, tile in pairs(tiles) do
+		local rel = tile.Position - origin
+		local x = rel:Dot(right)
+		local z = rel:Dot(forward)
+		minX = minX and math.min(minX, x) or x
+		maxX = maxX and math.max(maxX, x) or x
+		minZ = minZ and math.min(minZ, z) or z
+		maxZ = maxZ and math.max(maxZ, z) or z
+		local top = tile.Position.Y + tile.Size.Y * 0.5
+		topY = topY and math.max(topY, top) or top
+	end
+	local size = (any.Size.X + any.Size.Z) * 0.5
+	local halfX = (maxX - minX) * 0.5 + size * 0.5
+	local halfZ = (maxZ - minZ) * 0.5 + size * 0.5
+	if math.abs(halfX - halfZ) > math.max(halfX, halfZ) * 0.3 then
+		return nil
+	end
+	local center = origin + right * ((minX + maxX) * 0.5) + forward * ((minZ + maxZ) * 0.5)
+	center = Vector3.new(center.X, topY + 0.02, center.Z)
+	espNormal = cf.UpVector
+	espKind = "kotak"
+	return orderCorners({
+		center - right * halfX - forward * halfZ,
+		center + right * halfX - forward * halfZ,
+		center + right * halfX + forward * halfZ,
+		center - right * halfX + forward * halfZ,
+	})
+end
+
+local function gridBoard(parts, size)
+	local cf = parts[1].CFrame
+	local right = Vector3.new(cf.RightVector.X, 0, cf.RightVector.Z)
+	local forward = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
+	if right.Magnitude < 0.01 or forward.Magnitude < 0.01 then
+		return nil
+	end
+	right = right.Unit
+	forward = forward.Unit
+	local origin = parts[1].Position
+	local xs, zs = {}, {}
+	local topY
+	for _, part in ipairs(parts) do
+		local rel = part.Position - origin
+		table.insert(xs, rel:Dot(right))
+		table.insert(zs, rel:Dot(forward))
+		local top = part.Position.Y + part.Size.Y * 0.5
+		topY = topY and math.max(topY, top) or top
+	end
+	local linesX = cluster(xs, size * 0.35)
+	local linesZ = cluster(zs, size * 0.35)
+	if #linesX ~= 8 or #linesZ ~= 8 then
+		return nil
+	end
+	local center = origin + right * ((linesX[1] + linesX[8]) * 0.5) + forward * ((linesZ[1] + linesZ[8]) * 0.5)
+	center = Vector3.new(center.X, topY + 0.02, center.Z)
+	local halfX = (linesX[8] - linesX[1]) * 0.5 + size * 0.5
+	local halfZ = (linesZ[8] - linesZ[1]) * 0.5 + size * 0.5
+	espNormal = cf.UpVector
+	espKind = "kotak"
+	return orderCorners({
+		center - right * halfX - forward * halfZ,
+		center + right * halfX - forward * halfZ,
+		center + right * halfX + forward * halfZ,
+		center - right * halfX + forward * halfZ,
+	})
+end
+
+local function espParams()
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	local ignored = {}
+	if espFolder then
+		table.insert(ignored, espFolder)
+	end
+	local character = Player and Player.Character
+	if character then
+		table.insert(ignored, character)
+	end
+	params.FilterDescendantsInstances = ignored
+	return params
+end
+
+local function rayBoard()
+	local camera = Workspace and Workspace.CurrentCamera
+	if not camera or not Workspace.Raycast then
+		return nil
+	end
+	local viewport = camera.ViewportSize
+	if not viewport or viewport.X <= 0 then
+		return nil
+	end
+	local params = espParams()
+	local groups = {}
+	local big = nil
+	local bigArea = 0
+	for ix = 0, 10 do
+		for iy = 0, 10 do
+			local x = viewport.X * (0.15 + 0.7 * ix / 10)
+			local y = viewport.Y * (0.15 + 0.7 * iy / 10)
+			local ray = camera:ViewportPointToRay(x, y)
+			local hit = Workspace:Raycast(ray.Origin, ray.Direction * 4000, params)
+			local part = hit and hit.Instance
+			if part and part:IsA("BasePart") then
+				local flat = part.Size.Y <= math.min(part.Size.X, part.Size.Z) * 0.5
+				if flat then
+					local key = string.format("%.1f_%.1f_%.1f", part.Size.X, part.Size.Z, part.Position.Y)
+					local group = groups[key]
+					if not group then
+						group = { size = (part.Size.X + part.Size.Z) * 0.5, parts = {}, seen = {} }
+						groups[key] = group
+					end
+					if not group.seen[part] then
+						group.seen[part] = true
+						table.insert(group.parts, part)
+					end
+					local square = math.abs(part.Size.X - part.Size.Z) <= part.Size.X * 0.15
+					local area = part.Size.X * part.Size.Z
+					if square and part.Size.X >= 20 and part.Size.X <= 140 and area > bigArea then
+						big = part
+						bigArea = area
+					end
+				end
+			end
+		end
+	end
+	local best = nil
+	for _, group in pairs(groups) do
+		if #group.parts >= 20 and (not best or #group.parts > #best.parts) then
+			best = group
+		end
+	end
+	if best then
+		local corners = gridBoard(best.parts, best.size)
+		if corners then
+			return corners
+		end
+	end
+	if big then
+		espNormal = big.CFrame.UpVector
+		espKind = "papan"
+		return orderCorners(topCorners(big))
+	end
+	return nil
+end
+
+local function detectBoard()
+	if not Workspace or not Workspace.CurrentCamera then
+		return nil
+	end
+	local corners = namedBoard()
+	if not corners then
+		corners = rayBoard()
+	end
+	if not corners then
+		espKind = "gagal"
+		return nil
+	end
+	espRawCorners = corners
+	if espNormal and espNormal.Y < 0 then
+		espNormal = -espNormal
+	end
+	return corners
+end
+
+local function board()
+	if not espRawCorners then
+		local now = os.clock()
+		if now - espTriedAt < 4 then
+			return nil
+		end
+		espTriedAt = now
+		if not detectBoard() then
+			return nil
+		end
+	end
+	if espScale == 1 then
+		return espRawCorners
+	end
+	local raw = espRawCorners
+	local center = (raw.bl + raw.br + raw.tl + raw.tr) * 0.25
+	local function scalePoint(point)
+		return center + (point - center) * espScale
+	end
+	return {
+		bl = scalePoint(raw.bl),
+		br = scalePoint(raw.br),
+		tl = scalePoint(raw.tl),
+		tr = scalePoint(raw.tr),
+	}
+end
+
+local function cellCenter(corners, file, rank)
+	local u, v
+	if (myColor == "b") ~= espFlip then
+		u = (8 - file + 0.5) / 8
+		v = (rank - 1 + 0.5) / 8
+	else
+		u = (file - 1 + 0.5) / 8
+		v = (8 - rank + 0.5) / 8
+	end
+	local top = corners.tl:Lerp(corners.tr, u)
+	local bottom = corners.bl:Lerp(corners.br, u)
+	return top:Lerp(bottom, v)
+end
+
+local function cellSize(corners)
+	local width = (corners.br - corners.bl).Magnitude / 8
+	local height = (corners.tl - corners.bl).Magnitude / 8
+	return (width + height) * 0.5
+end
+
+local function ensureEsp()
+	if espFolder and espFolder.Parent == Workspace then
+		return true
+	end
+	espFolder = Instance.new("Folder")
+	espFolder.Name = "AfriezzxEsp"
+	espFolder.Parent = Workspace
+	espEntries = {}
+	for index = 1, 6 do
+		local part = Instance.new("Part")
+		part.Name = "Box" .. index
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanQuery = false
+		part.CanTouch = false
+		part.CastShadow = false
+		part.Material = Enum.Material.Neon
+		part.Transparency = 0.25
+		part.Size = Vector3.new(1, 0.05, 1)
+		part.Parent = espFolder
+		local tag = Instance.new("BillboardGui")
+		tag.Name = "Tag"
+		tag.AlwaysOnTop = true
+		tag.LightInfluence = 0
+		tag.Size = UDim2.fromOffset(150, 20)
+		tag.Parent = part
+		local label = Instance.new("TextLabel")
+		label.Name = "Text"
+		label.BackgroundTransparency = 1
+		label.Size = UDim2.fromScale(1, 1)
+		label.Font = Enum.Font.GothamBold
+		label.TextScaled = true
+		label.TextStrokeTransparency = 0.35
+		label.TextColor3 = Color3.fromRGB(255, 255, 255)
+		label.Text = ""
+		label.Parent = tag
+		espEntries[index] = { part = part, label = label, tag = tag }
+	end
+	return true
+end
+
+local function clearEsp()
+	if espFolder then
+		espFolder:Destroy()
+		espFolder = nil
+		espEntries = nil
+	end
+	espRawCorners = nil
+	espLastBest = nil
+	espTriedAt = -1000000000
+end
+
+local function renderEsp(fen, best, reply)
+	espLastFen = fen
+	espLastBest = best
+	espLastReply = reply
+	if not espEnabled then
+		clearEsp()
+		return
+	end
+	if not best or #best < 4 then
+		return
+	end
+	local corners = board()
+	if not corners or not ensureEsp() then
+		if espStatusLabel then
+			espStatusLabel.Text = "esp: gagal"
+		end
+		return
+	end
+	if espStatusLabel then
+		espStatusLabel.Text = "esp: " .. espKind
+	end
+	local size = cellSize(corners)
+	local right = corners.br - corners.bl
+	local forward = corners.tl - corners.bl
+	if right.Magnitude < 0.01 or forward.Magnitude < 0.01 then
+		return
+	end
+	right = right.Unit
+	forward = forward.Unit
+	local normal = espNormal or Vector3.new(0, 1, 0)
+	local turn = Chess.turnOf(fen)
+	local mine = myColor == nil or turn == myColor
+	local primaryFrom = string.sub(best, 1, 2)
+	local primaryTo = string.sub(best, 3, 4)
+	local replyFrom = reply and string.sub(reply, 1, 2) or nil
+	local replyTo = reply and string.sub(reply, 3, 4) or nil
+
+	local function hide(index)
+		local entry = espEntries[index]
+		if entry then
+			entry.part.Transparency = 1
+			entry.label.Text = ""
+		end
+	end
+
+	local function place(index, squareName, color, labelText, arrowFrom)
+		local entry = espEntries[index]
+		if not entry or not squareName then
+			return
+		end
+		local file = squareName:byte(1) - 96
+		local rank = tonumber(squareName:sub(2, 2))
+		if not file or not rank then
+			return
+		end
+		local position = cellCenter(corners, file, rank) + normal * 0.08
+		if arrowFrom then
+			local fromFile = arrowFrom:byte(1) - 96
+			local fromRank = tonumber(arrowFrom:sub(2, 2))
+			if not fromFile or not fromRank then
+				return
+			end
+			local origin = cellCenter(corners, fromFile, fromRank) + normal * 0.1
+			local delta = position - origin
+			local length = delta.Magnitude
+			if length < 0.05 then
+				hide(index)
+				return
+			end
+			entry.part.Size = Vector3.new(size * 0.16, 0.05, length)
+			entry.part.CFrame = CFrame.lookAt((origin + position) * 0.5, position, normal)
+			entry.part.Color = color
+			entry.part.Transparency = 0.1
+			entry.label.Text = ""
+		else
+			entry.part.Size = Vector3.new(size * 0.86, 0.05, size * 0.86)
+			entry.part.CFrame = CFrame.fromMatrix(position, right, normal)
+			entry.part.Color = color
+			entry.part.Transparency = 0.28
+			entry.label.Text = labelText
+			entry.label.TextColor3 = color
+			entry.tag.StudsOffsetWorldSpace = normal * 1.3
+		end
+	end
+
+	if mine then
+		place(1, primaryFrom, espColorMine, "kamu " .. pieceLabel(fenPiece(fen, primaryFrom)) .. " " .. primaryFrom)
+		place(2, primaryTo, espColorMineTo, "ke " .. primaryTo)
+		place(5, primaryTo, espColorMineTo, "", primaryFrom)
+	else
+		place(1, primaryFrom, espColorEnemy, "lawan " .. pieceLabel(fenPiece(fen, primaryFrom)) .. " " .. primaryFrom)
+		place(2, primaryTo, espColorEnemyTo, "ke " .. primaryTo)
+		place(5, primaryTo, espColorEnemyTo, "", primaryFrom)
+	end
+	if replyFrom and replyTo then
+		if mine then
+			place(3, replyFrom, espColorEnemy, "lawan " .. pieceLabel(fenPiece(fen, replyFrom)) .. " " .. replyFrom)
+			place(4, replyTo, espColorEnemyTo, "ke " .. replyTo)
+			place(6, replyTo, espColorEnemyTo, "", replyFrom)
+		else
+			place(3, replyFrom, espColorMine, "kamu " .. pieceLabel(fenPiece(fen, replyFrom)) .. " " .. replyFrom)
+			place(4, replyTo, espColorMineTo, "ke " .. replyTo)
+			place(6, replyTo, espColorMineTo, "", replyFrom)
+		end
+	else
+		hide(3)
+		hide(4)
+		hide(6)
+	end
+end
+
 local function sendMove(value)
 	local remote = prefixed("RE/SubmitMove_")
 	safeCall(remote, "FireServer", value)
@@ -1798,6 +2363,7 @@ local function thinkAndPlay(sourceFen, force)
 		if predictReply and reply then
 			log("lawan: " .. reply, "act")
 		end
+		renderEsp(sourceFen, best, reply)
 		if force or loopState then
 			sendMove(best)
 			lastAutoFen = sourceFen
@@ -1830,6 +2396,7 @@ local function preview(fen)
 			if replyLabel then
 				replyLabel.Text = reply or "-"
 			end
+			renderEsp(fen, best, reply)
 		end
 		local queued = pendingPreview
 		pendingPreview = nil
@@ -1920,6 +2487,7 @@ local function bindGame()
 					description = tostring(payload.Description or payload.Result or "selesai")
 				end
 				log("game: " .. description, "ok")
+				clearEsp()
 				setStatus("ended", true)
 			end)
 		end
@@ -1964,6 +2532,7 @@ if gameStarted then
 				log("lawan engine " .. tostring(payload.ai and payload.ai.Engine or "?"), "act")
 			end
 			bindGame()
+			clearEsp()
 			if fenLabel then
 				fenLabel.Text = shortFen(lastFen)
 			end
@@ -2084,6 +2653,7 @@ button(predictScroll.Row6, "hitung", 62, function()
 		if predictReply and reply then
 			log("prediksi " .. reply, "act")
 		end
+		renderEsp(fen, best, reply)
 		local box = moveScroll.Row1:FindFirstChild("Field")
 		if box then
 			box.Text = best
@@ -2135,6 +2705,25 @@ button(predictScroll.Row9, "ganti", 62, function()
 	end
 	colorLabel.Text = colorMode == "w" and "white" or (colorMode == "b" and "black" or "auto")
 	log("warna " .. colorLabel.Text, "act")
+end)
+
+row(predictScroll, 10, "esp")
+espStatusLabel = predictScroll.Row10.Label
+espStatusLabel.Text = "esp: aktif"
+toggle(predictScroll.Row10, true, function(state)
+	espEnabled = state
+	if state then
+		espTriedAt = 0
+		espRawCorners = nil
+		if espLastBest then
+			renderEsp(espLastFen, espLastBest, espLastReply)
+		end
+		toast("ESP nyala", espColorMineTo)
+	else
+		clearEsp()
+		espStatusLabel.Text = "esp: mati"
+		toast("ESP mati", Palette.dim)
+	end
 end)
 
 row(moveScroll, 1, "move uci")
@@ -2441,6 +3030,33 @@ button(boardScroll.Row8, "pindai", 62, function()
 	end
 end)
 
+row(boardScroll, 9, "skala papan")
+slider(boardScroll.Row9, 80, 100, 100, 170, function(value)
+	espScale = value / 100
+	if espLastBest then
+		renderEsp(espLastFen, espLastBest, espLastReply)
+	end
+end)
+
+row(boardScroll, 10, "pindai papan")
+button(boardScroll.Row10, "cari", 62, function()
+	espRawCorners = nil
+	espTriedAt = 0
+	local ok = detectBoard()
+	toast(ok and ("ESP: " .. espKind) or "ESP: papan tidak ketemu", ok and espColorMineTo or espColorEnemy)
+	if ok and espLastBest then
+		renderEsp(espLastFen, espLastBest, espLastReply)
+	end
+end)
+
+row(boardScroll, 11, "balik papan")
+toggle(boardScroll.Row11, false, function(state)
+	espFlip = state
+	if espLastBest then
+		renderEsp(espLastFen, espLastBest, espLastReply)
+	end
+end)
+
 local function openMenu()
 	if shell.Visible then
 		return
@@ -2639,6 +3255,11 @@ local function retryBind(attempt)
 	end)
 end
 retryBind(0)
+task.delay(3.2, function()
+	if not espLastBest then
+		preview(lastFen)
+	end
+end)
 local function autoTick()
 	if loopState and not thinking and myTurn() and lastFen and lastAutoFen ~= lastFen and not localSpoof then
 		thinkAndPlay(lastFen)
