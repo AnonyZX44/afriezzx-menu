@@ -2199,7 +2199,7 @@ end
 local function board()
 	if not espRawCorners then
 		local now = os.clock()
-		if now - espTriedAt < 4 then
+		if now - espTriedAt < 8 then
 			return nil
 		end
 		espTriedAt = now
@@ -2496,7 +2496,7 @@ local function proxyCurrent()
 		end
 		return proxyGame
 	end
-	if proxyAttempts >= 6 or type(require) ~= "function" then
+	if proxyAttempts >= 20 or type(require) ~= "function" then
 		return nil
 	end
 	proxyAttempts = proxyAttempts + 1
