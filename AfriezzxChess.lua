@@ -879,7 +879,7 @@ local Chess = (function()
 		if not best then
 			return nil, nil, nodes, nil
 		end
-		local reply = searchState(makeMove(state, best), 1)
+		local reply = searchState(makeMove(state, best), math.max(1, (depth or 3) - 1))
 		local replyText = nil
 		if reply then
 			replyText = Engine.moveToUci(reply)
@@ -1719,7 +1719,7 @@ local detectedColor = nil
 local colorMode = "auto"
 local gameId = nil
 local predictReply = true
-local searchDepth = 2
+local searchDepth = 3
 local autoDraw = false
 local autoRematch = false
 local hijack = false
@@ -1744,6 +1744,7 @@ local turnLabel
 local bestLabel
 local replyLabel
 local colorLabel
+local srcLabel
 local hookLabel
 local rematchLabel
 
@@ -1933,7 +1934,11 @@ local function namedBoard()
 	local tiles = {}
 	for _, item in ipairs(Workspace:GetDescendants()) do
 		if item:IsA("BasePart") then
-			local file, rank = item.Name:lower():match("^([a-h])([1-8])$")
+			local lower = item.Name:lower()
+			local file, rank = lower:match("^([a-h])([1-8])$")
+			if not file then
+				file, rank = lower:match("^[%a_%-]*([a-h])([1-8])$")
+			end
 			if file and rank then
 				tiles[file .. rank] = item
 			end
@@ -1972,6 +1977,9 @@ local function namedBoard()
 	local halfX = (maxX - minX) * 0.5 + size * 0.5
 	local halfZ = (maxZ - minZ) * 0.5 + size * 0.5
 	if math.abs(halfX - halfZ) > math.max(halfX, halfZ) * 0.3 then
+		return nil
+	end
+	if size < 0.5 or halfX < 4 or halfX > 100 then
 		return nil
 	end
 	local center = origin + right * ((minX + maxX) * 0.5) + forward * ((minZ + maxZ) * 0.5)
@@ -2037,6 +2045,70 @@ local function espParams()
 	end
 	params.FilterDescendantsInstances = ignored
 	return params
+end
+
+local function scanBoard()
+	local camera = Workspace and Workspace.CurrentCamera
+	if not camera then
+		return nil
+	end
+	local viewport = camera.ViewportSize
+	local center = Vector2.new(viewport.X * 0.5, viewport.Y * 0.5)
+	local origin = camera.CFrame.Position
+	local groups = {}
+	local candidates = {}
+	for _, item in ipairs(Workspace:GetDescendants()) do
+		if item:IsA("BasePart") then
+			local size = item.Size
+			local maxSide = math.max(size.X, size.Z)
+			local squareish = math.abs(size.X - size.Z) <= maxSide * 0.08
+			local thin = size.Y <= math.min(size.X, size.Z) * 0.5
+			if squareish and thin and size.X >= 1 and size.X <= 160 then
+				local distance = (item.Position - origin).Magnitude
+				if distance < 350 then
+					if size.X >= 16 then
+						local screen = screenOf(item.Position)
+						if screen and (screen - center).Magnitude < viewport.X * 0.3 then
+							table.insert(candidates, item)
+						end
+					else
+						local key = string.format("%.1f_%.1f", size.X, item.Position.Y)
+						local group = groups[key]
+						if not group then
+							group = { size = size.X, parts = {}, seen = {} }
+							groups[key] = group
+						end
+						if not group.seen[item] then
+							group.seen[item] = true
+							table.insert(group.parts, item)
+						end
+					end
+				end
+			end
+		end
+	end
+	local best = nil
+	for _, group in pairs(groups) do
+		if #group.parts >= 24 and (not best or #group.parts > #best.parts) then
+			best = group
+		end
+	end
+	if best then
+		local corners = gridBoard(best.parts, best.size)
+		if corners then
+			return corners
+		end
+	end
+	table.sort(candidates, function(a, b)
+		return a.Size.X < b.Size.X
+	end)
+	local single = candidates[1]
+	if single then
+		espNormal = single.CFrame.UpVector
+		espKind = "papan"
+		return orderCorners(topCorners(single))
+	end
+	return nil
 end
 
 local function rayBoard()
@@ -2108,6 +2180,9 @@ local function detectBoard()
 	end
 	local corners = namedBoard()
 	if not corners then
+		corners = scanBoard()
+	end
+	if not corners then
 		corners = rayBoard()
 	end
 	if not corners then
@@ -2128,7 +2203,8 @@ local function board()
 			return nil
 		end
 		espTriedAt = now
-		if not detectBoard() then
+		local ok, corners = pcall(detectBoard)
+		if not ok or not corners then
 			return nil
 		end
 	end
@@ -2406,6 +2482,175 @@ local function preview(fen)
 	end)
 end
 
+local proxyService = nil
+local proxyGame = nil
+local proxyAttempts = 0
+
+local function proxyCurrent()
+	if proxyService then
+		local ok, game = pcall(function()
+			return proxyService.ChessGame
+		end)
+		if ok and game then
+			proxyGame = game
+		end
+		return proxyGame
+	end
+	if proxyAttempts >= 6 or type(require) ~= "function" then
+		return nil
+	end
+	proxyAttempts = proxyAttempts + 1
+	local scripts = Player and Player:FindFirstChild("PlayerScripts")
+	local services = scripts and scripts:FindFirstChild("Services")
+	local module = services and services:FindFirstChild("ChessProxyService")
+	if not module then
+		return nil
+	end
+	local ok, service = pcall(require, module)
+	if ok and type(service) == "table" then
+		proxyService = service
+		local ok2, game = pcall(function()
+			return service.ChessGame
+		end)
+		if ok2 and game then
+			proxyGame = game
+		end
+	end
+	return proxyGame
+end
+
+local function proxyRead(game, keys)
+	for _, key in ipairs(keys) do
+		local ok, value = pcall(function()
+			return game[key]
+		end)
+		if ok and value ~= nil then
+			return value
+		end
+	end
+	return nil
+end
+
+local function proxyFen(game)
+	if not game then
+		return nil
+	end
+	local value = proxyRead(game, { "FEN", "fen", "CurrentFEN", "currentFEN", "Fen", "PositionFEN" })
+	if type(value) == "string" and value:find("/") and value:find(" ") then
+		return value
+	end
+	for _, key in ipairs({ "State", "state", "GameState", "gameState", "Data", "data" }) do
+		local ok, state = pcall(function()
+			return game[key]
+		end)
+		if ok and type(state) == "table" then
+			local nested = proxyRead(state, { "FEN", "fen", "CurrentFEN", "currentFEN" })
+			if type(nested) == "string" and nested:find("/") then
+				return nested
+			end
+		end
+	end
+	for _, key in ipairs({ "GetFEN", "getFEN", "GetCurrentFEN", "ToFEN", "GetPosition", "getPosition" }) do
+		local ok, fn = pcall(function()
+			return game[key]
+		end)
+		if ok and type(fn) == "function" then
+			local ok2, result = pcall(fn, game)
+			if ok2 and type(result) == "string" and result:find("/") then
+				return result
+			end
+		end
+	end
+	local ok, values = pcall(function()
+		return game
+	end)
+	if ok and type(values) == "table" then
+		local found = nil
+		pcall(function()
+			for _, item in pairs(values) do
+				if type(item) == "string" and item:match("^[%w/]+ [wb] ") then
+					found = item
+					break
+				end
+			end
+		end)
+		if found then
+			return found
+		end
+	end
+	return nil
+end
+
+local function proxyColor(game)
+	if not game then
+		return nil
+	end
+	for _, key in ipairs({ "AmIWhite", "amIWhite", "IsWhite", "isWhite", "White" }) do
+		local ok, value = pcall(function()
+			return game[key]
+		end)
+		if ok and type(value) == "boolean" then
+			return value and "w" or "b"
+		end
+	end
+	for _, key in ipairs({ "Color", "color", "Side", "side", "PlayerColor", "playerColor" }) do
+		local ok, value = pcall(function()
+			return game[key]
+		end)
+		if ok then
+			if value == "w" or value == "white" or value == "White" then
+				return "w"
+			end
+			if value == "b" or value == "black" or value == "Black" then
+				return "b"
+			end
+		end
+	end
+	local ok, state = pcall(function()
+		return game.State or game.state
+	end)
+	if ok and type(state) == "table" then
+		for _, key in ipairs({ "AmIWhite", "amIWhite", "IsWhite", "isWhite" }) do
+			local ok2, value = pcall(function()
+				return state[key]
+			end)
+			if ok2 and type(value) == "boolean" then
+				return value and "w" or "b"
+			end
+		end
+	end
+	return nil
+end
+
+local function proxyTick()
+	local game = proxyCurrent()
+	local fen = proxyFen(game)
+	local color = proxyColor(game)
+	if color and color ~= detectedColor then
+		detectedColor = color
+		if colorMode == "auto" then
+			myColor = color
+		end
+	end
+	if fen and fen ~= lastFen then
+		lastFen = fen
+		lastPreviewFen = nil
+		if fenLabel then
+			fenLabel.Text = shortFen(fen)
+		end
+		local turn = Chess.turnOf(fen)
+		if turnLabel then
+			turnLabel.Text = turn == "w" and "white" or (turn == "b" and "black" or "?")
+		end
+		preview(fen)
+	end
+	if srcLabel then
+		srcLabel.Text = fen and "proxy" or "move"
+	end
+	task.delay(0.5, proxyTick)
+end
+task.delay(0.5, proxyTick)
+
 local connMove, connDraw, connEnded
 
 local function bindGame()
@@ -2624,7 +2869,7 @@ replyLabel = text(predictScroll.Row4, {
 })
 
 row(predictScroll, 5, "depth")
-slider(predictScroll.Row5, 1, 3, 2, 170, function(value)
+slider(predictScroll.Row5, 1, 4, 3, 170, function(value)
 	searchDepth = math.floor(value + 0.5)
 	lastPreviewFen = nil
 	if lastFen then
@@ -2725,6 +2970,17 @@ toggle(predictScroll.Row10, true, function(state)
 		toast("ESP mati", Palette.dim)
 	end
 end)
+
+row(predictScroll, 11, "sumber")
+srcLabel = text(predictScroll.Row11, {
+	Name = "State",
+	Text = "move",
+	TextSize = 10,
+	TextColor3 = Palette.dim,
+	TextXAlignment = Enum.TextXAlignment.Right,
+	Position = UDim2.new(0, 14, 0, 9),
+	Size = UDim2.new(1, -28, 0, 14),
+})
 
 row(moveScroll, 1, "move uci")
 local moveBox = field(moveScroll.Row1, "e2e4", "", 96)
@@ -3042,7 +3298,8 @@ row(boardScroll, 10, "pindai papan")
 button(boardScroll.Row10, "cari", 62, function()
 	espRawCorners = nil
 	espTriedAt = 0
-	local ok = detectBoard()
+	local success, corners = pcall(detectBoard)
+	local ok = success and corners ~= nil
 	toast(ok and ("ESP: " .. espKind) or "ESP: papan tidak ketemu", ok and espColorMineTo or espColorEnemy)
 	if ok and espLastBest then
 		renderEsp(espLastFen, espLastBest, espLastReply)
