@@ -1270,15 +1270,22 @@ local function log(message, tone)
 end
 
 local function waitNet()
-	local packages = ReplicatedStorage:WaitForChild("Packages", 10)
-	if not packages then
-		return nil
+	local packages = ReplicatedStorage:FindFirstChild("Packages") or ReplicatedStorage:WaitForChild("Packages", 6)
+	if packages then
+		local util = packages:FindFirstChild("RbxUtil") or packages:WaitForChild("RbxUtil", 4)
+		if util then
+			local found = util:FindFirstChild("Net") or util:WaitForChild("Net", 4)
+			if found then
+				return found
+			end
+		end
 	end
-	local util = packages:WaitForChild("RbxUtil", 5)
-	if not util then
-		return nil
+	for _, child in ipairs(ReplicatedStorage:GetDescendants()) do
+		if child.Name == "RF/AcceptChallenge" or string.sub(child.Name, 1, 13) == "RE/SubmitMove" then
+			return child.Parent
+		end
 	end
-	return util:WaitForChild("Net", 5)
+	return nil
 end
 
 local Net = waitNet()
@@ -1287,7 +1294,7 @@ if not Net then
 	statusDot.BackgroundColor3 = Palette.bad
 	log("Net tidak ada", "bad")
 else
-	log("net siap", "ok")
+	log("net siap " .. tostring(#Net:GetChildren()) .. " remote", "ok")
 end
 
 local function netChild(name)
@@ -1704,14 +1711,17 @@ end
 
 local lastFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 local myColor = nil
+local detectedColor = nil
+local colorMode = "auto"
 local gameId = nil
-local autoPlay = false
 local predictReply = true
 local searchDepth = 2
 local autoDraw = false
 local autoRematch = false
 local hijack = false
 local thinking = false
+local previewBusy = false
+local lastPreviewFen = nil
 local lastAutoFen = nil
 local loopState = false
 local lastRematch = nil
@@ -1726,7 +1736,9 @@ local pastRemote = nil
 
 local fenLabel
 local turnLabel
-local scoreLabel
+local bestLabel
+local replyLabel
+local colorLabel
 local hookLabel
 local rematchLabel
 
@@ -1781,63 +1793,121 @@ local function thinkAndPlay(sourceFen, force)
 	end)
 end
 
-local function bindGame()
-	local previousEnded = gameEndedRemote
-	if previousEnded and previousEnded.OnClientEvent then
-		pcall(function()
-			previousEnded.OnClientEvent:Disconnect()
-		end)
+local pendingPreview = nil
+
+local function preview(fen)
+	if not fen then
+		return
 	end
-	moveMadeRemote = prefixed("RE/MoveMade_")
-	drawRemote = prefixed("RE/DrawOffer_")
-	pastRemote = prefixed("RE/PastMove1_")
-	gameEndedRemote = prefixed("RE/GameEnded_")
-	if moveMadeRemote then
-		moveMadeRemote.OnClientEvent:Connect(function(fen, events)
-			if type(fen) == "string" and fen:find("/") then
+	if previewBusy then
+		pendingPreview = fen
+		return
+	end
+	if lastPreviewFen == fen then
+		return
+	end
+	previewBusy = true
+	task.spawn(function()
+		local ok, best, score, nodes, reply = pcall(Chess.bestMove, fen, searchDepth)
+		previewBusy = false
+		if ok and best then
+			lastPreviewFen = fen
+			if bestLabel then
+				bestLabel.Text = best .. "  " .. tostring(score)
+			end
+			if replyLabel then
+				replyLabel.Text = reply or "-"
+			end
+		end
+		local queued = pendingPreview
+		pendingPreview = nil
+		if queued and queued ~= lastPreviewFen then
+			preview(queued)
+		end
+	end)
+end
+
+local connMove, connDraw, connEnded
+
+local function bindGame()
+	local foundMove = prefixed("RE/MoveMade_")
+	if foundMove ~= moveMadeRemote then
+		if connMove then
+			pcall(function()
+				connMove:Disconnect()
+			end)
+		end
+		connMove = nil
+		moveMadeRemote = foundMove
+		if moveMadeRemote then
+			connMove = moveMadeRemote.OnClientEvent:Connect(function(fen, events)
+				if type(fen) ~= "string" or not fen:find("/") then
+					return
+				end
 				lastFen = fen
+				lastPreviewFen = nil
 				if fenLabel then
 					fenLabel.Text = shortFen(fen)
 				end
 				local turn = Chess.turnOf(fen)
 				if turnLabel then
-					turnLabel.Text = turn == "w" and "white" or "black"
+					turnLabel.Text = turn == "w" and "white" or (turn == "b" and "black" or "?")
 				end
-				if type(events) == "table" and type(events[2]) == "table" then
-					local moveEvent = events[2]
-					if moveEvent[1] == "Move" then
-						log("lawan " .. tostring(moveEvent[2]) .. tostring(moveEvent[3]), "act")
-					end
+				if type(events) == "table" and type(events[2]) == "table" and events[2][1] == "Move" then
+					log("jalan " .. tostring(events[2][2]) .. tostring(events[2][3]), "act")
 				end
 				if loopState and myTurn() and lastAutoFen ~= fen and not localSpoof then
 					thinkAndPlay(fen)
+				else
+					preview(fen)
 				end
-			end
-		end)
+			end)
+		end
 	end
-	if drawRemote then
-		drawRemote.OnClientEvent:Connect(function(offered)
-			if offered == true then
-				log("tawaran draw masuk", "act")
-				if autoDraw then
-					task.delay(0.15, function()
-						safeCall(drawRemote, "FireServer")
-						log("draw dibalas", "ok")
-					end)
+	local foundDraw = prefixed("RE/DrawOffer_")
+	if foundDraw ~= drawRemote then
+		if connDraw then
+			pcall(function()
+				connDraw:Disconnect()
+			end)
+		end
+		connDraw = nil
+		drawRemote = foundDraw
+		if drawRemote then
+			connDraw = drawRemote.OnClientEvent:Connect(function(offered)
+				if offered == true then
+					log("tawaran draw masuk", "act")
+					if autoDraw then
+						task.delay(0.15, function()
+							safeCall(drawRemote, "FireServer")
+							log("draw dibalas", "ok")
+						end)
+					end
 				end
-			end
-		end)
+			end)
+		end
 	end
-	if gameEndedRemote then
-		gameEndedRemote.OnClientEvent:Connect(function(payload)
-			local description = "selesai"
-			if type(payload) == "table" then
-				description = tostring(payload.Description or payload.Result or "selesai")
-			end
-			log("game: " .. description, "ok")
-			setStatus("ended", true)
-		end)
+	local foundEnded = prefixed("RE/GameEnded_")
+	if foundEnded ~= gameEndedRemote then
+		if connEnded then
+			pcall(function()
+				connEnded:Disconnect()
+			end)
+		end
+		connEnded = nil
+		gameEndedRemote = foundEnded
+		if gameEndedRemote then
+			connEnded = gameEndedRemote.OnClientEvent:Connect(function(payload)
+				local description = "selesai"
+				if type(payload) == "table" then
+					description = tostring(payload.Description or payload.Result or "selesai")
+				end
+				log("game: " .. description, "ok")
+				setStatus("ended", true)
+			end)
+		end
 	end
+	pastRemote = prefixed("RE/PastMove1_")
 end
 
 local function setColorFromPayload(payload)
@@ -1856,6 +1926,10 @@ local function setColorFromPayload(payload)
 			gameId = payload.gameID
 		end
 	end
+	detectedColor = myColor
+	if colorMode == "auto" then
+		myColor = detectedColor
+	end
 end
 
 local gameStarted = netChild("RE/GameStarted")
@@ -1873,6 +1947,14 @@ if gameStarted then
 				log("lawan engine " .. tostring(payload.ai and payload.ai.Engine or "?"), "act")
 			end
 			bindGame()
+			if fenLabel then
+				fenLabel.Text = shortFen(lastFen)
+			end
+			if turnLabel then
+				turnLabel.Text = Chess.turnOf(lastFen) == "w" and "white" or "black"
+			end
+			lastPreviewFen = nil
+			preview(lastFen)
 		end
 	end)
 end
@@ -1933,53 +2015,110 @@ turnLabel = text(predictScroll.Row2, {
 	Size = UDim2.new(1, -28, 0, 14),
 })
 
-row(predictScroll, 3, "depth")
-slider(predictScroll.Row3, 1, 3, 2, 170, function(value)
-	searchDepth = math.floor(value + 0.5)
-end)
-
-row(predictScroll, 4, "hitung")
-button(predictScroll.Row4, "hitung", 62, function()
-	if not lastFen then
-		log("fen kosong", "bad")
-		return
-	end
-	local ok, best, score, nodes, reply = pcall(Chess.bestMove, lastFen, searchDepth)
-	if not ok or not best then
-		log("engine gagal", "bad")
-		return
-	end
-	scoreLabel.Text = tostring(score)
-	log("best " .. best .. " skor " .. tostring(score) .. " node " .. tostring(nodes), "ok")
-	if predictReply and reply then
-		log("prediksi lawan " .. reply, "act")
-	end
-	local moveBox = moveScroll.Row1:FindFirstChild("Field")
-	if moveBox then
-		moveBox.Text = best
-	end
-end)
-
-row(predictScroll, 5, "auto main")
-loopState = false
-toggle(predictScroll.Row5, false, function(state)
-	loopState = state
-	log(state and "auto main nyala" or "auto main mati", state and "ok" or "act")
-	if state and myTurn() and lastFen then
-		thinkAndPlay(lastFen)
-	end
-end)
-
-row(predictScroll, 6, "skor")
-scoreLabel = text(predictScroll.Row6, {
+row(predictScroll, 3, "langkah")
+bestLabel = text(predictScroll.Row3, {
 	Name = "State",
-	Text = "0",
-	TextSize = 10,
+	Text = "-",
+	TextSize = 11,
 	TextColor3 = Palette.good,
 	TextXAlignment = Enum.TextXAlignment.Right,
 	Position = UDim2.new(0, 14, 0, 9),
 	Size = UDim2.new(1, -28, 0, 14),
 })
+
+row(predictScroll, 4, "balasan")
+replyLabel = text(predictScroll.Row4, {
+	Name = "State",
+	Text = "-",
+	TextSize = 10,
+	TextColor3 = Palette.dim,
+	TextXAlignment = Enum.TextXAlignment.Right,
+	Position = UDim2.new(0, 14, 0, 9),
+	Size = UDim2.new(1, -28, 0, 14),
+})
+
+row(predictScroll, 5, "depth")
+slider(predictScroll.Row5, 1, 3, 2, 170, function(value)
+	searchDepth = math.floor(value + 0.5)
+	lastPreviewFen = nil
+	if lastFen then
+		preview(lastFen)
+	end
+end)
+
+row(predictScroll, 6, "hitung")
+button(predictScroll.Row6, "hitung", 62, function()
+	local fen = lastFen
+	if not fen then
+		log("fen kosong", "bad")
+		return
+	end
+	lastPreviewFen = nil
+	task.spawn(function()
+		local ok, best, score, nodes, reply = pcall(Chess.bestMove, fen, searchDepth)
+		if not ok or not best then
+			log("engine gagal", "bad")
+			return
+		end
+		lastPreviewFen = fen
+		bestLabel.Text = best .. "  " .. tostring(score)
+		replyLabel.Text = reply or "-"
+		log("best " .. best .. " skor " .. tostring(score) .. " node " .. tostring(nodes), "ok")
+		if predictReply and reply then
+			log("prediksi " .. reply, "act")
+		end
+		local box = moveScroll.Row1:FindFirstChild("Field")
+		if box then
+			box.Text = best
+		end
+	end)
+end)
+
+row(predictScroll, 7, "auto main")
+toggle(predictScroll.Row7, false, function(state)
+	loopState = state
+	log(state and "auto main nyala" or "auto main mati", state and "ok" or "act")
+	if state then
+		if not myColor then
+			log("warna belum ketahuan, atur di tombol warna", "bad")
+		elseif myTurn() and lastFen then
+			thinkAndPlay(lastFen)
+		end
+	end
+end)
+
+row(predictScroll, 8, "prediksi")
+toggle(predictScroll.Row8, true, function(state)
+	predictReply = state
+	log(state and "prediksi nyala" or "prediksi mati", state and "ok" or "act")
+end)
+
+row(predictScroll, 9, "warna")
+colorLabel = text(predictScroll.Row9, {
+	Name = "State",
+	Text = "auto",
+	TextSize = 10,
+	TextColor3 = Palette.brass,
+	TextXAlignment = Enum.TextXAlignment.Right,
+	Position = UDim2.new(0, 14, 0, 9),
+	Size = UDim2.new(1, -110, 0, 14),
+})
+button(predictScroll.Row9, "ganti", 62, function()
+	if colorMode == "auto" then
+		colorMode = "w"
+	elseif colorMode == "w" then
+		colorMode = "b"
+	else
+		colorMode = "auto"
+	end
+	if colorMode == "auto" then
+		myColor = detectedColor
+	else
+		myColor = colorMode
+	end
+	colorLabel.Text = colorMode == "w" and "white" or (colorMode == "b" and "black" or "auto")
+	log("warna " .. colorLabel.Text, "act")
+end)
 
 row(moveScroll, 1, "move uci")
 local moveBox = field(moveScroll.Row1, "e2e4", "", 96)
@@ -2209,6 +2348,17 @@ button(pvpScroll.Row7, "pindai", 62, function()
 	log("total challenge " .. tostring(count), "ok")
 end)
 
+row(pvpScroll, 8, "surrender")
+button(pvpScroll.Row8, "nyerah", 62, function()
+	local target = prefixed("RE/Resign_") or prefixed("RE/Surrender_") or netChild("RE/Resign") or netChild("RE/Surrender")
+	if not target then
+		log("remote surrender tidak ada", "bad")
+		return
+	end
+	safeCall(target, "FireServer")
+	log("surrender dikirim", "act")
+end)
+
 row(boardScroll, 1, "fen palsu")
 local fenBox = field(boardScroll.Row1, "fen", "", 110)
 row(boardScroll, 2, "kirim")
@@ -2259,6 +2409,21 @@ button(boardScroll.Row7, "bersih", 62, function()
 	wipeLog()
 end)
 
+row(boardScroll, 8, "remote")
+button(boardScroll.Row8, "pindai", 62, function()
+	if not Net then
+		log("net tidak ada", "bad")
+		return
+	end
+	local children = Net:GetChildren()
+	log("net " .. tostring(#children) .. " remote", "ok")
+	for index, child in ipairs(children) do
+		if index <= 12 then
+			log(child.Name, "act")
+		end
+	end
+end)
+
 local function openMenu()
 	if shell.Visible then
 		return
@@ -2281,8 +2446,10 @@ local function closeMenu()
 	end)
 end
 
-local bubble = make("CanvasGroup", {
+local bubble = make("TextButton", {
 	Name = "Bubble",
+	Text = "",
+	AutoButtonColor = false,
 	Size = UDim2.fromOffset(46, 46),
 	Position = UDim2.new(1, -66, 0.5, -23),
 	BackgroundTransparency = 1,
@@ -2322,6 +2489,7 @@ bubble.MouseLeave:Connect(function()
 end)
 
 local dragState = nil
+local bubbleMoved = 0
 
 local function beginDrag(input, object, keep)
 	if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then
@@ -2346,6 +2514,9 @@ UserInputService.InputChanged:Connect(function(input)
 	local deltaX = input.Position.X - dragState.start.X
 	local deltaY = input.Position.Y - dragState.start.Y
 	dragState.moved = math.abs(deltaX) + math.abs(deltaY)
+	if dragState.object == bubble then
+		bubbleMoved = dragState.moved
+	end
 	dragState.object.Position = UDim2.new(
 		dragState.origin.X.Scale,
 		dragState.origin.X.Offset + deltaX,
@@ -2361,23 +2532,7 @@ UserInputService.InputEnded:Connect(function(input)
 	if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then
 		return
 	end
-	local finished = dragState
 	dragState = nil
-	if finished.keep == "bubble" and finished.moved < 6 then
-		tween(bubbleScale, 0.1, { Scale = 0.86 })
-		task.delay(0.1, function()
-			tween(bubbleScale, 0.26, { Scale = 1 }, Enum.EasingStyle.Back)
-			if shell.Visible then
-				closeMenu()
-				task.delay(0.24, function()
-					bubble.Visible = true
-				end)
-			else
-				bubble.Visible = false
-				openMenu()
-			end
-		end)
-	end
 end)
 
 header.InputBegan:Connect(function(input)
@@ -2385,7 +2540,27 @@ header.InputBegan:Connect(function(input)
 end)
 
 bubble.InputBegan:Connect(function(input)
+	bubbleMoved = 0
 	beginDrag(input, bubble, "bubble")
+end)
+
+bubble.MouseButton1Click:Connect(function()
+	if bubbleMoved >= 6 then
+		return
+	end
+	tween(bubbleScale, 0.1, { Scale = 0.86 })
+	task.delay(0.1, function()
+		tween(bubbleScale, 0.26, { Scale = 1 }, Enum.EasingStyle.Back)
+		if shell.Visible then
+			closeMenu()
+			task.delay(0.24, function()
+				bubble.Visible = true
+			end)
+		else
+			bubble.Visible = false
+			openMenu()
+		end
+	end)
 end)
 
 closeButton.MouseButton1Click:Connect(function()
@@ -2436,4 +2611,22 @@ task.delay(2.9, function()
 	end)
 end)
 
+bindGame()
+local function retryBind(attempt)
+	if moveMadeRemote or attempt > 15 then
+		return
+	end
+	task.delay(1, function()
+		bindGame()
+		retryBind(attempt + 1)
+	end)
+end
+retryBind(0)
+local function autoTick()
+	if loopState and not thinking and myTurn() and lastFen and lastAutoFen ~= lastFen and not localSpoof then
+		thinkAndPlay(lastFen)
+	end
+	task.delay(2, autoTick)
+end
+task.delay(2, autoTick)
 log("kit siap", "ok")
