@@ -1292,9 +1292,13 @@ local Net = waitNet()
 if not Net then
 	statusLabel.Text = "offline"
 	statusDot.BackgroundColor3 = Palette.bad
+	introTag.Text = "net tidak ada"
+	print("[AfriezzxChess] net tidak ada")
 	log("Net tidak ada", "bad")
 else
 	log("net siap " .. tostring(#Net:GetChildren()) .. " remote", "ok")
+	introTag.Text = "net " .. tostring(#Net:GetChildren()) .. " remote"
+	print("[AfriezzxChess] net " .. tostring(#Net:GetChildren()) .. " remote")
 end
 
 local function netChild(name)
@@ -1733,6 +1737,7 @@ local gameEndedRemote = nil
 local moveMadeRemote = nil
 local drawRemote = nil
 local pastRemote = nil
+local pendingMove = nil
 
 local fenLabel
 local turnLabel
@@ -1765,6 +1770,13 @@ local function sendMove(value)
 	local remote = prefixed("RE/SubmitMove_")
 	safeCall(remote, "FireServer", value)
 	log("move " .. value, "act")
+	pendingMove = value
+	task.delay(1.5, function()
+		if pendingMove == value then
+			pendingMove = nil
+			log("move " .. value .. " ditolak server", "bad")
+		end
+	end)
 end
 
 local function thinkAndPlay(sourceFen, force)
@@ -1854,7 +1866,12 @@ local function bindGame()
 					turnLabel.Text = turn == "w" and "white" or (turn == "b" and "black" or "?")
 				end
 				if type(events) == "table" and type(events[2]) == "table" and events[2][1] == "Move" then
-					log("jalan " .. tostring(events[2][2]) .. tostring(events[2][3]), "act")
+					local made = tostring(events[2][2]) .. tostring(events[2][3])
+					log("jalan " .. made, "act")
+					if pendingMove == made then
+						pendingMove = nil
+						log("move " .. made .. " diterima", "ok")
+					end
 				end
 				if loopState and myTurn() and lastAutoFen ~= fen and not localSpoof then
 					thinkAndPlay(fen)
